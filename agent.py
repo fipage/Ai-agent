@@ -1,264 +1,412 @@
 import os
 import json
+import requests
 from openai import OpenAI
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-OPENAI_API_KEY = (
-    os.getenv("OPENAI_API_KEY", "")
-    .replace("\\n", "")
-    .replace("\n", "")
-    .replace("\r", "")
-    .strip()
-)
-
-TELEGRAM_BOT_TOKEN = (
-    os.getenv("TELEGRAM_BOT_TOKEN", "")
-    .replace("\\n", "")
-    .replace("\n", "")
-    .replace("\r", "")
-    .strip()
-)
-
-CHEAP_MODEL = "gpt-4.1-mini"
-MEMORY_FILE = "memory.json"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").replace("\\n", "").replace("\n", "").replace("\r", "").strip()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").replace("\\n", "").replace("\n", "").replace("\r", "").strip()
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").replace("\\n", "").replace("\n", "").replace("\r", "").strip()
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
+MEMORY_FILE = "memory.json"
+MODEL_CHEAP = "gpt-4.1-mini"
+
 SYSTEM_PROMPT = """
-Ты персональный AI-агент для YouTube-канала HiFi Trade.
+Ты YouTube Growth Intelligence Agent для канала HiFi Trade.
 
-Тематика канала:
-- криптовалюты,
-- трейдинг,
-- инвестиции,
-- Bitcoin,
-- Ethereum,
-- альткоины,
-- meme coins,
-- AI coins,
-- RWA,
-- DePIN,
-- GameFi,
-- macro,
-- рыночные циклы,
-- риск-менеджмент.
+Главная цель:
+помогать владельцу канала развивать YouTube-канал, экономить время на ресерче,
+находить сильные темы для видео и Shorts, анализировать что уже есть на канале
+и чего не хватает для роста подписчиков.
 
-Главная задача:
-помогать владельцу канала находить темы для YouTube, которые могут дать просмотры, удержание и рост канала.
+Тематика:
+- Bitcoin
+- Ethereum
+- crypto market cycles
+- macro
+- liquidity
+- ETF flows
+- regulation
+- institutional adoption
+- risk management
+- market psychology
+- long-term investing
+- serious trading/investing content
 
-Ты работаешь как:
-1. YouTube-стратег.
-2. Crypto market analyst.
-3. Research assistant.
-4. Редактор заголовков и хуков.
-5. Экономный AI-ассистент.
+Строго запрещено предлагать:
+- мемкоины
+- скам-монеты
+- low-cap garbage
+- random pumps
+- "иксы", "100x", "срочно покупай"
+- мусорные листинги
+- хайп без фундаментальной причины
 
-Правила:
-- Отвечай по-русски.
-- Отвечай компактно, без воды.
-- Не давай финансовых гарантий.
-- Всегда разделяй: хайп / долгосрок / риск.
-- Для идей роликов давай: тема, заголовок, hook, почему зайдёт, риск.
-- Если информации мало — задавай 1 короткий уточняющий вопрос.
-- Не обещай точный рост монет.
-- Не выдавай спекуляции за факт.
+Ты НЕ новостной пересказчик.
+Ты должен думать как:
+- YouTube strategist
+- crypto analyst
+- content producer
+- market psychologist
+
+Каждый ответ должен быть полезен для роста канала.
+
+Формат хорошей идеи:
+1. Тема
+2. Почему это может дать просмотры
+3. Для кого ролик
+4. Hook первых 10 секунд
+5. Заголовок
+6. Почему это не мусор
+
+Отвечай по-русски.
+Кратко, но по делу.
+Экономь токены.
 """
-
-DEFAULT_MEMORY = {
-    "channel": "HiFi Trade",
-    "channel_url": "https://www.youtube.com/@hifitrade",
-    "niche": "crypto, trading, investing, YouTube content",
-    "style": "практичный крипто-анализ, идеи роликов, хайповые и долгосрочные темы",
-    "important_notes": []
-}
-
 
 def load_memory():
     try:
         with open(MEMORY_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            for key, value in DEFAULT_MEMORY.items():
-                if key not in data:
-                    data[key] = value
-            return data
+            return json.load(f)
     except Exception:
-        save_memory(DEFAULT_MEMORY)
-        return DEFAULT_MEMORY.copy()
-
+        return {}
 
 def save_memory(memory):
     with open(MEMORY_FILE, "w", encoding="utf-8") as f:
         json.dump(memory, f, ensure_ascii=False, indent=2)
 
+def get_channel_id_from_video(video_url):
+    if "youtu.be/" in video_url:
+        video_id = video_url.split("youtu.be/")[1].split("?")[0]
+    elif "v=" in video_url:
+        video_id = video_url.split("v=")[1].split("&")[0]
+    else:
+        return None
 
-def memory_text():
-    return json.dumps(load_memory(), ensure_ascii=False, indent=2)
+    url = "https://www.googleapis.com/youtube/v3/videos"
+    params = {
+        "part": "snippet,statistics",
+        "id": video_id,
+        "key": YOUTUBE_API_KEY
+    }
 
+    r = requests.get(url, params=params, timeout=20)
+    data = r.json()
+
+    items = data.get("items", [])
+    if not items:
+        return None
+
+    return items[0]["snippet"]["channelId"]
+
+def get_channel_videos(channel_id, max_results=15):
+    search_url = "https://www.googleapis.com/youtube/v3/search"
+    search_params = {
+        "part": "snippet",
+        "channelId": channel_id,
+        "maxResults": max_results,
+        "order": "date",
+        "type": "video",
+        "key": YOUTUBE_API_KEY
+    }
+
+    r = requests.get(search_url, params=search_params, timeout=20)
+    data = r.json()
+
+    video_ids = []
+    basic = {}
+
+    for item in data.get("items", []):
+        vid = item["id"]["videoId"]
+        video_ids.append(vid)
+        basic[vid] = {
+            "title": item["snippet"]["title"],
+            "publishedAt": item["snippet"]["publishedAt"]
+        }
+
+    if not video_ids:
+        return []
+
+    stats_url = "https://www.googleapis.com/youtube/v3/videos"
+    stats_params = {
+        "part": "snippet,statistics",
+        "id": ",".join(video_ids),
+        "key": YOUTUBE_API_KEY
+    }
+
+    r = requests.get(stats_url, params=stats_params, timeout=20)
+    data = r.json()
+
+    videos = []
+    for item in data.get("items", []):
+        stats = item.get("statistics", {})
+        videos.append({
+            "title": item["snippet"]["title"],
+            "publishedAt": item["snippet"]["publishedAt"],
+            "views": int(stats.get("viewCount", 0)),
+            "likes": int(stats.get("likeCount", 0)) if "likeCount" in stats else 0,
+            "comments": int(stats.get("commentCount", 0)) if "commentCount" in stats else 0
+        })
+
+    return videos
+
+def youtube_search(query, max_results=8):
+    url = "https://www.googleapis.com/youtube/v3/search"
+    params = {
+        "part": "snippet",
+        "q": query,
+        "maxResults": max_results,
+        "order": "relevance",
+        "type": "video",
+        "key": YOUTUBE_API_KEY
+    }
+
+    r = requests.get(url, params=params, timeout=20)
+    data = r.json()
+
+    results = []
+    for item in data.get("items", []):
+        results.append({
+            "title": item["snippet"]["title"],
+            "channel": item["snippet"]["channelTitle"],
+            "publishedAt": item["snippet"]["publishedAt"]
+        })
+
+    return results
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "AI агент HiFi Trade запущен ✅\n\n"
+        "HiFi Trade AI Agent запущен ✅\n\n"
         "Команды:\n"
-        "/youtube запрос — идеи для роликов\n"
-        "/trend запрос — хайповые темы\n"
-        "/evergreen запрос — долгосрочные темы\n"
-        "/coin запрос — идея/анализ монеты\n"
-        "/title запрос — заголовки и хуки\n"
-        "/cheap запрос — короткий экономный ответ\n"
-        "/remember текст — запомнить\n"
-        "/memory — показать память"
+        "/channel — анализ канала\n"
+        "/gaps — чего не хватает каналу\n"
+        "/ideas — идеи роликов\n"
+        "/shorts — идеи Shorts\n"
+        "/report — отчёт по контенту\n"
+        "/scan тема — проверить YouTube-конкуренцию\n"
+        "/cheap вопрос — экономный ответ"
     )
 
+async def channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not YOUTUBE_API_KEY:
+            await update.message.reply_text("Ошибка: YOUTUBE_API_KEY не добавлен в Railway.")
+            return
 
-async def show_memory(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(memory_text()[:4000])
+        memory = load_memory()
+        ref_video = memory.get("reference_video", "")
 
+        channel_id = get_channel_id_from_video(ref_video)
+        if not channel_id:
+            await update.message.reply_text("Не смог получить channelId из видео. Проверь ссылку в memory.json.")
+            return
 
-async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = " ".join(context.args).strip()
-    if not text:
-        await update.message.reply_text("Пример: /remember аудитория канала — новички и средний уровень в крипте")
-        return
+        videos = get_channel_videos(channel_id)
 
-    memory = load_memory()
-    memory.setdefault("important_notes", []).append(text)
-    save_memory(memory)
+        prompt = f"""
+Проанализируй последние видео YouTube-канала HiFi Trade.
 
-    await update.message.reply_text("Запомнил ✅")
+Память канала:
+{json.dumps(memory, ensure_ascii=False, indent=2)}
 
+Последние видео:
+{json.dumps(videos, ensure_ascii=False, indent=2)}
 
-async def youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = " ".join(context.args).strip()
-    if not query:
-        query = "дай 10 идей для роликов по крипте для канала HiFi Trade"
-    await ask_ai(update, query, mode="youtube")
+Дай:
+1. Что уже понятно по каналу
+2. Какие темы повторяются
+3. Чего не хватает для роста
+4. Какие ролики могут привести новых подписчиков
+5. Что НЕ надо делать
+6. 5 конкретных следующих видео
 
+Не предлагай мемкоины, скам, random pumps.
+"""
 
-async def trend(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = " ".join(context.args).strip()
-    if not query:
-        query = "какие крипто-темы могут быть хайповыми на YouTube в ближайшие дни"
-    await ask_ai(update, query, mode="trend")
+        answer = ask_ai(prompt, max_chars=3500)
+        await update.message.reply_text(answer[:4000])
 
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка /channel: {str(e)}")
 
-async def evergreen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = " ".join(context.args).strip()
-    if not query:
-        query = "какие долгосрочные темы по крипте стоит делать на канал"
-    await ask_ai(update, query, mode="evergreen")
+async def gaps(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        memory = load_memory()
+        prompt = f"""
+Ты анализируешь канал HiFi Trade.
 
+Задача: найти content gaps — чего не хватает каналу, чтобы росли подписчики.
 
-async def coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = " ".join(context.args).strip()
-    if not query:
-        await update.message.reply_text("Пример: /coin SOL стоит ли делать ролик?")
-        return
-    await ask_ai(update, query, mode="coin")
+Память:
+{json.dumps(memory, ensure_ascii=False, indent=2)}
 
+Дай:
+1. 7 недостающих рубрик
+2. 7 тем, которые могут привлекать новую аудиторию
+3. 5 evergreen тем
+4. 5 тем под хайп, но без мусора
+5. Что убрать из контента
+"""
+        answer = ask_ai(prompt)
+        await update.message.reply_text(answer[:4000])
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка /gaps: {str(e)}")
 
-async def title(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = " ".join(context.args).strip()
-    if not query:
-        await update.message.reply_text("Пример: /title ролик про альтсезон")
-        return
-    await ask_ai(update, query, mode="title")
+async def ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        prompt = """
+Дай 10 сильных идей для YouTube-роликов канала HiFi Trade.
 
+Фокус:
+- BTC
+- ETH
+- macro
+- ETF
+- liquidity
+- cycles
+- risk
+- serious crypto investing
+
+Запрещено:
+мемкоины, скам, low-cap, random pumps.
+
+Формат:
+1. Заголовок
+2. Почему зритель кликнет
+3. Hook первых 10 секунд
+4. Почему это серьёзная тема
+"""
+        answer = ask_ai(prompt)
+        await update.message.reply_text(answer[:4000])
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка /ideas: {str(e)}")
+
+async def shorts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        prompt = """
+Дай 10 идей для Shorts канала HiFi Trade.
+
+Нужны короткие, цепляющие, серьёзные темы:
+- BTC
+- рынок
+- психология толпы
+- ошибки инвесторов
+- macro
+- ETF
+- liquidity
+
+Без мемкоинов и скама.
+
+Формат:
+1. Тема
+2. Первая фраза
+3. Суть в 1 предложении
+"""
+        answer = ask_ai(prompt)
+        await update.message.reply_text(answer[:4000])
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка /shorts: {str(e)}")
+
+async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        prompt = """
+Сделай ежедневный контент-отчёт для HiFi Trade.
+
+Не пересказывай мусорные новости.
+Найди стратегические темы.
+
+Формат:
+1. Главный market narrative дня
+2. 3 идеи для long-form видео
+3. 3 идеи для Shorts
+4. Что сейчас лучше не трогать
+5. Одна сильная тема для роста подписчиков
+6. Почему это может сработать на YouTube
+
+Без мемкоинов, скама и random pumps.
+"""
+        answer = ask_ai(prompt)
+        await update.message.reply_text(answer[:4000])
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка /report: {str(e)}")
+
+async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        query = " ".join(context.args).strip()
+        if not query:
+            await update.message.reply_text("Напиши так: /scan bitcoin etf liquidity")
+            return
+
+        results = youtube_search(query)
+
+        prompt = f"""
+Проверь YouTube-конкуренцию по теме: {query}
+
+Найденные видео:
+{json.dumps(results, ensure_ascii=False, indent=2)}
+
+Оцени:
+1. Тема перегрета или есть окно возможностей?
+2. Какой угол можно взять для HiFi Trade?
+3. Какой заголовок лучше?
+4. Как сделать ролик не копией конкурентов?
+5. Стоит ли снимать: YES/NO и почему
+"""
+        answer = ask_ai(prompt)
+        await update.message.reply_text(answer[:4000])
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка /scan: {str(e)}")
 
 async def cheap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).strip()
     if not query:
-        await update.message.reply_text("Пример: /cheap дай 5 идей для роликов")
+        await update.message.reply_text("Напиши так: /cheap дай 5 идей")
         return
-    await ask_ai(update, query, mode="cheap")
 
+    answer = ask_ai("Ответь очень кратко и экономно:\n" + query, max_chars=1200)
+    await update.message.reply_text(answer[:4000])
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await ask_ai(update, update.message.text, mode="normal")
+    text = update.message.text
+    answer = ask_ai(text, max_chars=2000)
+    await update.message.reply_text(answer[:4000])
 
+def ask_ai(prompt, max_chars=3000):
+    response = client.responses.create(
+        model=MODEL_CHEAP,
+        input=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt}
+        ]
+    )
 
-def build_mode_prompt(mode: str) -> str:
-    if mode == "youtube":
-        return (
-            "Режим YouTube-стратега. Дай идеи роликов. Формат: "
-            "1) тема 2) заголовок 3) hook 4) почему зайдёт 5) риск. "
-            "До 10 идей, компактно."
-        )
-    if mode == "trend":
-        return (
-            "Режим хайп-трендов. Найди темы, которые могут быть актуальны прямо сейчас. "
-            "Раздели на: срочно снять / можно подождать / рискованно."
-        )
-    if mode == "evergreen":
-        return (
-            "Режим evergreen. Дай темы, которые будут набирать просмотры долго. "
-            "Укажи почему тема не устареет."
-        )
-    if mode == "coin":
-        return (
-            "Режим анализа монеты/нарратива. Не давай финансовых гарантий. "
-            "Формат: тезис, потенциал для видео, риски, возможный заголовок."
-        )
-    if mode == "title":
-        return (
-            "Режим редактора. Дай 10 кликабельных, но не мошеннических заголовков "
-            "и 5 hooks для начала ролика."
-        )
-    if mode == "cheap":
-        return "Экономный режим. Ответь очень кратко, максимум 500 символов."
-    return "Обычный режим. Отвечай полезно и компактно."
-
-
-async def ask_ai(update: Update, user_text: str, mode: str):
-    try:
-        response = client.responses.create(
-            model=CHEAP_MODEL,
-            input=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "system", "content": f"Память пользователя:\n{memory_text()}"},
-                {"role": "system", "content": build_mode_prompt(mode)},
-                {"role": "user", "content": user_text},
-            ],
-        )
-
-        answer = response.output_text or "Не удалось получить ответ."
-        await update.message.reply_text(answer[:4000])
-
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка: {str(e)}")
-
+    text = response.output_text or "Не удалось получить ответ."
+    return text[:max_chars]
 
 def main():
     if not OPENAI_API_KEY:
         raise ValueError("OPENAI_API_KEY missing")
-
     if not TELEGRAM_BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN missing")
-
-    load_memory()
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("memory", show_memory))
-    app.add_handler(CommandHandler("remember", remember))
-    app.add_handler(CommandHandler("youtube", youtube))
-    app.add_handler(CommandHandler("trend", trend))
-    app.add_handler(CommandHandler("evergreen", evergreen))
-    app.add_handler(CommandHandler("coin", coin))
-    app.add_handler(CommandHandler("title", title))
+    app.add_handler(CommandHandler("channel", channel))
+    app.add_handler(CommandHandler("gaps", gaps))
+    app.add_handler(CommandHandler("ideas", ideas))
+    app.add_handler(CommandHandler("shorts", shorts))
+    app.add_handler(CommandHandler("report", report))
+    app.add_handler(CommandHandler("scan", scan))
     app.add_handler(CommandHandler("cheap", cheap))
+
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("HiFi Trade Telegram AI Agent Started")
+    print("HiFi Trade YouTube Growth Agent Started")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
