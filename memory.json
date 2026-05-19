@@ -1,21 +1,7 @@
 {
   "channel": "HiFi Trade",
-  "style": "спокойный умный crypto analyst, не screaming influencer",
-  "notes": [
-    "Главная сила канала — адекватность и спокойная аналитика.",
-    "Упаковывать анализ через выгоду/риск для зрителя.",
-    "Не использовать дешёвый кликбейт и обещания иксов.",
-    "Видео выходят каждый вторник."
-  ],
-  "competitors": [
-    "Benjamin Cowen",
-    "Coin Bureau",
-    "Altcoin Daily"
-  ],
-  "avoid": [
-    "дешёвый кликбейт",
-    "1000x GEM",
-    "обещания доходности",
-    "слишком сложные термины в первые 30 секунд"
-  ]
+  "channel_url": "https://www.youtube.com/@hifitrade",
+  "niche": "crypto, trading, investing, YouTube content",
+  "style": "практичный крипто-анализ, идеи роликов, хайповые и долгосрочные темы",
+  "important_notes": []
 }
