@@ -4,7 +4,7 @@ import asyncio
 import datetime as dt
 import urllib.request
 import urllib.parse
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 from telegram import Update
@@ -15,6 +15,10 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+
+# =========================
+# ENV
+# =========================
 
 def clean_env(name: str) -> str:
     return (
@@ -28,7 +32,6 @@ def clean_env(name: str) -> str:
 OPENAI_API_KEY = clean_env("OPENAI_API_KEY")
 TELEGRAM_BOT_TOKEN = clean_env("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = clean_env("TELEGRAM_CHAT_ID")
-
 DAILY_REPORT_TIME = clean_env("DAILY_REPORT_TIME") or "09:00"
 
 YOUTUBE_API_KEY = clean_env("YOUTUBE_API_KEY")
@@ -40,8 +43,6 @@ CHEAP_MODEL = clean_env("CHEAP_MODEL") or "gpt-4.1-mini"
 DEEP_MODEL = clean_env("DEEP_MODEL") or "gpt-4.1-mini"
 
 MEMORY_FILE = "memory.json"
-CACHE_FILE = "cache.json"
-
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 SYSTEM_PROMPT = """
@@ -83,6 +84,10 @@ SYSTEM_PROMPT = """
 - не обещай доходность
 """
 
+# =========================
+# JSON / MEMORY
+# =========================
+
 def load_json(path: str, default: Any) -> Any:
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -97,8 +102,13 @@ def save_json(path: str, data: Any) -> None:
 def load_memory() -> Dict[str, Any]:
     return load_json(MEMORY_FILE, {
         "channel": "HiFi Trade",
-        "style": "спокойный умный crypto analyst",
-        "notes": [],
+        "style": "спокойный умный crypto analyst, не screaming influencer",
+        "notes": [
+            "Главная сила канала — адекватность и спокойная аналитика.",
+            "Упаковывать анализ через выгоду/риск для зрителя.",
+            "Не использовать дешёвый кликбейт и обещания иксов.",
+            "Видео выходят каждый вторник."
+        ],
         "competitors": [
             "Benjamin Cowen",
             "Coin Bureau",
@@ -106,15 +116,20 @@ def load_memory() -> Dict[str, Any]:
         ],
         "avoid": [
             "дешёвый кликбейт",
-            "обещания иксов",
-            "инфоцыганские формулировки"
+            "1000x GEM",
+            "обещания доходности",
+            "слишком сложные термины в первые 30 секунд"
         ]
     })
 
 def save_memory(memory: Dict[str, Any]) -> None:
     save_json(MEMORY_FILE, memory)
 
-def http_json(url: str, headers: Dict[str, str] | None = None, timeout: int = 20) -> Any:
+# =========================
+# HTTP
+# =========================
+
+def http_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 20) -> Any:
     req = urllib.request.Request(url, headers=headers or {})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
@@ -138,9 +153,7 @@ def get_coingecko_markets() -> List[Dict[str, Any]]:
 
 def get_youtube_channel_stats() -> Dict[str, Any]:
     if not YOUTUBE_API_KEY or not YOUTUBE_CHANNEL_ID:
-        return {
-            "error": "YOUTUBE_API_KEY или YOUTUBE_CHANNEL_ID не добавлены в Railway Variables."
-        }
+        return {"error": "YOUTUBE_API_KEY или YOUTUBE_CHANNEL_ID не добавлены в Railway Variables."}
 
     url = (
         "https://www.googleapis.com/youtube/v3/channels?"
@@ -154,9 +167,7 @@ def get_youtube_channel_stats() -> Dict[str, Any]:
 
 def get_youtube_recent_videos() -> Dict[str, Any]:
     if not YOUTUBE_API_KEY or not YOUTUBE_CHANNEL_ID:
-        return {
-            "error": "YOUTUBE_API_KEY или YOUTUBE_CHANNEL_ID не добавлены в Railway Variables."
-        }
+        return {"error": "YOUTUBE_API_KEY или YOUTUBE_CHANNEL_ID не добавлены в Railway Variables."}
 
     search_url = (
         "https://www.googleapis.com/youtube/v3/search?"
@@ -170,7 +181,7 @@ def get_youtube_recent_videos() -> Dict[str, Any]:
         })
     )
     search_data = http_json(search_url)
-    video_ids = ",".join([item["id"]["videoId"] for item in search_data.get("items", [])])
+    video_ids = ",".join([item["id"]["videoId"] for item in search_data.get("items", []) if "id" in item and "videoId" in item["id"]])
 
     if not video_ids:
         return search_data
@@ -187,9 +198,7 @@ def get_youtube_recent_videos() -> Dict[str, Any]:
 
 def search_x_recent(query: str) -> Dict[str, Any]:
     if not X_BEARER_TOKEN:
-        return {
-            "error": "X_BEARER_TOKEN не добавлен в Railway Variables. Без него реальный X/Twitter мониторинг не работает."
-        }
+        return {"error": "X_BEARER_TOKEN не добавлен в Railway Variables. Без него реальный X/Twitter мониторинг не работает."}
 
     url = (
         "https://api.twitter.com/2/tweets/search/recent?"
@@ -201,16 +210,30 @@ def search_x_recent(query: str) -> Dict[str, Any]:
     )
     return http_json(url, headers={"Authorization": f"Bearer {X_BEARER_TOKEN}"})
 
+# =========================
+# GPT / TELEGRAM HELPERS
+# =========================
+
+async def send_text_to_chat(app, chat_id: int, text: str) -> None:
+    chunks = [text[i:i+3900] for i in range(0, len(text), 3900)] or ["Пустой ответ."]
+    for chunk in chunks:
+        await app.bot.send_message(chat_id=chat_id, text=chunk)
+
 async def reply(update: Update, text: str) -> None:
     if not update.message:
         return
-
     chunks = [text[i:i+3900] for i in range(0, len(text), 3900)] or ["Пустой ответ."]
     for chunk in chunks:
         await update.message.reply_text(chunk)
 
-def gpt_text(prompt: str, model: str = CHEAP_MODEL, web: bool = False, max_output_tokens: int = 900) -> str:
+def gpt_text(
+    prompt: str,
+    model: Optional[str] = None,
+    web: bool = False,
+    max_output_tokens: int = 900,
+) -> str:
     memory = load_memory()
+    model = model or CHEAP_MODEL
 
     kwargs: Dict[str, Any] = {
         "model": model,
@@ -236,37 +259,47 @@ async def ask(update: Update, prompt: str, web: bool = False, deep: bool = False
     except Exception as e:
         await reply(update, f"Ошибка: {str(e)}")
 
+# =========================
+# BASIC COMMANDS
+# =========================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = """
 AI агент HiFi Trade запущен ✅
 
 Главные команды:
+/news — 5 хайповых новостей
+/testreport — тест утреннего отчёта прямо в этот чат
+/myid — узнать chat id для утренних отчётов
+
+YouTube:
 /title тема — заголовки
 /thumb тема — превью
 /hook тема — первые 30 секунд
 /short тема — Shorts
 /weekly — контент-план недели
-/trend — crypto narratives сейчас
-/research тема — web research
-/news — 5 новостей крипты и инвестиций
 /evaluate текст — оценка заголовка/превью
 /humanize текст — сделать проще
-/yt — статистика канала через YouTube API
-/competitors — идеи анализа конкурентов
-/x тема — мониторинг X/Twitter, если добавлен API
+
+Research:
+/trend — crypto narratives сейчас
+/research тема — web research
 /market — данные CoinGecko
-/myid — узнать Telegram chat id
+/competitors тема — анализ конкурентов
+/yt — YouTube API, если подключён
+/x тема — X/Twitter API, если подключён
+
+Память и экономия:
 /remember текст — запомнить
 /memory — показать память
 /cheap текст — экономный ответ
 /deep тема — глубокий анализ
-/testreport — проверить утренний отчёт
 """
     await reply(update, text)
 
 async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id if update.effective_chat else "unknown"
-    await reply(update, f"Твой Telegram chat id:\n{chat_id}\n\nДобавь его в Railway Variables как TELEGRAM_CHAT_ID.")
+    await reply(update, f"Твой Telegram chat id:\n{chat_id}\n\nДобавь в Railway Variables:\nTELEGRAM_CHAT_ID={chat_id}")
 
 async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = " ".join(context.args).strip()
@@ -303,6 +336,10 @@ async def deep(update: Update, context: ContextTypes.DEFAULT_TYPE):
 6. YouTube упаковка
 7. 3 идеи роликов
 """, deep=True, max_tokens=1400)
+
+# =========================
+# YOUTUBE PACKAGING
+# =========================
 
 async def title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).strip()
@@ -415,6 +452,10 @@ async def humanize(update: Update, context: ContextTypes.DEFAULT_TYPE):
 спокойно, понятно, без инфоцыганства.
 """, max_tokens=900)
 
+# =========================
+# RESEARCH / NEWS / MARKET
+# =========================
+
 async def trend(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await ask(update, """
 Найди актуальные crypto narratives и темы для YouTube на сейчас.
@@ -449,14 +490,17 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Найди 5 самых обсуждаемых новостей за последние 24 часа из мира крипты и инвестиций.
 
 Для каждой:
-- новость
-- почему это важно
-- влияние на BTC/альты/рынок
-- идея ролика или Shorts
-- уровень срочности: low/medium/high
+1. Новость
+2. Почему хайпует
+3. Влияние на рынок
+4. Идея ролика/Shorts для HiFi Trade
+5. Срочность: low/medium/high
 
-Кратко, но полезно.
-""", web=True, max_tokens=1400)
+В конце дай:
+- 3 темы для YouTube ролика
+- 5 тем для Shorts
+- что лучше не трогать сегодня
+""", web=True, max_tokens=1500)
 
 async def market(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -552,6 +596,30 @@ async def x_monitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await reply(update, f"Ошибка X monitoring: {str(e)}")
 
+# =========================
+# DAILY REPORT
+# =========================
+
+REPORT_PROMPT = """
+Сформируй утренний отчёт для HiFi Trade.
+
+Нужно 5 самых обсуждаемых новостей за последние 24 часа из мира крипты и инвестиций.
+
+Для каждой:
+1. Новость
+2. Почему обсуждают / почему хайпует
+3. Влияние на рынок
+4. Идея ролика/Shorts
+5. Срочность: low/medium/high
+
+В конце:
+- 3 темы для видео
+- 5 тем для Shorts
+- что лучше не трогать сегодня
+
+Кратко, но полезно.
+"""
+
 def parse_report_time() -> tuple[int, int]:
     try:
         h, m = DAILY_REPORT_TIME.split(":")
@@ -559,38 +627,30 @@ def parse_report_time() -> tuple[int, int]:
     except Exception:
         return 9, 0
 
+async def build_daily_report() -> str:
+    return gpt_text(REPORT_PROMPT, web=True, max_output_tokens=1600)
+
 async def send_daily_report(app):
     if not TELEGRAM_CHAT_ID:
         print("TELEGRAM_CHAT_ID missing: daily reports disabled")
         return
 
     try:
-        answer = gpt_text("""
-Сформируй утренний отчёт для HiFi Trade.
-
-Нужно 5 самых обсуждаемых новостей за последние 24 часа из крипты и инвестиций.
-
-Для каждой:
-1. Новость
-2. Почему обсуждают
-3. Влияние на рынок
-4. Идея для ролика/Shorts
-5. Срочность
-
-В конце:
-- 3 темы для видео
-- 5 тем для Shorts
-- что лучше не трогать сегодня
-
-Кратко.
-""", web=True, max_output_tokens=1600)
-
-        await app.bot.send_message(chat_id=int(TELEGRAM_CHAT_ID), text=answer[:3900])
+        answer = await build_daily_report()
+        await send_text_to_chat(app, int(TELEGRAM_CHAT_ID), answer)
     except Exception as e:
         try:
             await app.bot.send_message(chat_id=int(TELEGRAM_CHAT_ID), text=f"Ошибка утреннего отчёта: {str(e)}")
         except Exception:
             print("Daily report error:", e)
+
+async def testreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, "Готовлю тестовый отчёт...")
+    try:
+        answer = await build_daily_report()
+        await reply(update, answer)
+    except Exception as e:
+        await reply(update, f"Ошибка тестового отчёта: {str(e)}")
 
 async def daily_scheduler(app):
     sent_dates = set()
@@ -606,9 +666,9 @@ async def daily_scheduler(app):
 
         await asyncio.sleep(30)
 
-async def test_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await reply(update, "Готовлю тестовый утренний отчёт...")
-    await send_daily_report(context.application)
+# =========================
+# FALLBACK / MAIN
+# =========================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await ask(update, update.message.text, max_tokens=900)
@@ -632,10 +692,9 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("myid", myid))
-    app.add_handler(CommandHandler("remember", remember))
-    app.add_handler(CommandHandler("memory", memory))
-    app.add_handler(CommandHandler("cheap", cheap))
-    app.add_handler(CommandHandler("deep", deep))
+
+    app.add_handler(CommandHandler("news", news))
+    app.add_handler(CommandHandler("testreport", testreport))
 
     app.add_handler(CommandHandler("title", title))
     app.add_handler(CommandHandler("thumb", thumb))
@@ -647,16 +706,19 @@ def main():
 
     app.add_handler(CommandHandler("trend", trend))
     app.add_handler(CommandHandler("research", research))
-    app.add_handler(CommandHandler("news", news))
     app.add_handler(CommandHandler("market", market))
     app.add_handler(CommandHandler("yt", yt))
     app.add_handler(CommandHandler("competitors", competitors))
     app.add_handler(CommandHandler("x", x_monitor))
-    app.add_handler(CommandHandler("testreport", test_report))
+
+    app.add_handler(CommandHandler("remember", remember))
+    app.add_handler(CommandHandler("memory", memory))
+    app.add_handler(CommandHandler("cheap", cheap))
+    app.add_handler(CommandHandler("deep", deep))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("HiFi Trade AI Agent v3 started")
+    print("HiFi Trade AI Agent FINAL started")
     app.run_polling()
 
 if __name__ == "__main__":
