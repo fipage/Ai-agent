@@ -1,7 +1,16 @@
 {
-  "channel": "HiFi Trade",
+  "channel_name": "HiFi Trade",
   "channel_url": "https://www.youtube.com/@hifitrade",
-  "niche": "crypto, trading, investing, YouTube content",
-  "style": "практичный крипто-анализ, идеи роликов, хайповые и долгосрочные темы",
-  "important_notes": []
+  "reference_video": "https://youtu.be/sw2q3R1OcZ4?si=uoDbyeqlBYM-HZOG",
+  "niche": "crypto, bitcoin, market cycles, macro, investing, trading",
+  "forbidden_topics": [
+    "meme coins",
+    "random pumps",
+    "shitcoins",
+    "scam coins",
+    "low-cap garbage",
+    "x100 hype"
+  ],
+  "content_goal": "grow YouTube channel with serious crypto/macro content, save research time, find useful video ideas",
+  "style": "serious, analytical, practical, no hype, no scam, no memecoins"
 }
