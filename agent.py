@@ -362,92 +362,285 @@ WEST YouTube:
 """
     await reply_long(update, ask_ai(prompt))
 
-async def bloggers_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def collect_btc_sentiment_influencers():
     memory = load_memory()
-    watchlist = memory.get("ru_cis_sentiment_watchlist", [])
 
-    if not watchlist:
-        await update.message.reply_text(
-            "Список блогеров пуст. Проверь ru_cis_sentiment_watchlist в memory.json."
+    rows = []
+    seen = set()
+
+    def add_row(name, mood="neutral", market="RU/CIS", role="source"):
+        if not name:
+            return
+
+        key = name.lower().strip()
+        if key in seen:
+            return
+        seen.add(key)
+
+        rows.append({
+            "name": name,
+            "mood": mood,
+            "market": market,
+            "role": role
+        })
+
+    # RU/CIS: directional crypto/BTC influencers
+    for item in memory.get("ru_cis_sentiment_watchlist", []):
+        add_row(
+            item.get("name", ""),
+            item.get("last_known_mood", "neutral"),
+            "RU/CIS",
+            "influencer"
         )
-        return
 
-    bearish = []
-    bullish = []
-    neutral = []
+    # RU/CIS: media / channels / broader socio-economic sources
+    for name in memory.get("ru_cis_monitoring_sources", []):
+        add_row(name, "unknown", "RU/CIS", "media")
 
-    for item in watchlist:
-        mood = item.get("last_known_mood", "neutral")
-        name = item.get("name", "Unknown")
-        view = item.get("last_known_view", "")
+    # Legacy RU/CIS list support
+    for name in memory.get("ru_cis_bloggers", []):
+        add_row(name, "unknown", "RU/CIS", "source")
 
-        if mood == "bearish":
-            bearish.append((name, view))
-        elif mood == "bullish":
-            bullish.append((name, view))
+    # WEST: directional crypto/BTC influencers
+    for item in memory.get("west_sentiment_watchlist", []):
+        add_row(
+            item.get("name", ""),
+            item.get("last_known_mood", "neutral"),
+            "WEST",
+            "influencer"
+        )
+
+    # WEST: media / analytics / macro sources
+    for name in memory.get("west_monitoring_sources", []):
+        add_row(name, "unknown", "WEST", "media")
+
+    # Legacy WEST list support
+    for name in memory.get("west_bloggers", []):
+        add_row(name, "unknown", "WEST", "source")
+
+    return rows
+
+
+def collect_recent_context_for_sources(rows, max_total_items=60):
+    items = []
+
+    for row in rows:
+        if len(items) >= max_total_items:
+            break
+
+        name = row["name"]
+        market = row["market"]
+
+        if market == "RU/CIS":
+            query = f'{name} биткоин крипта рынок прогноз'
         else:
-            neutral.append((name, view))
+            query = f'{name} bitcoin crypto market outlook'
 
-    total = len(watchlist)
-    red_count = len(bearish)
-    green_count = len(bullish)
-    yellow_count = len(neutral)
+        try:
+            results = youtube_search(query, max_results=2)
+            for r in results:
+                items.append({
+                    "source": name,
+                    "market": market,
+                    "title": r.get("title", ""),
+                    "channel": r.get("channel", ""),
+                    "publishedAt": r.get("publishedAt", "")
+                })
+        except Exception:
+            continue
 
-    red_bar = "🔴" * red_count
-    green_bar = "🟢" * green_count
-    yellow_bar = "🟡" * yellow_count
+    return items[:max_total_items]
 
-    lines = []
-    lines.append("📊 Настроение RU/CIS крипто-блогеров")
-    lines.append("")
-    lines.append(f"Всего в списке: {total}")
-    lines.append(f"🔴 Медвежьи: {red_count}")
-    lines.append(f"🟢 Бычьи: {green_count}")
-    lines.append(f"🟡 Нейтральные: {yellow_count}")
-    lines.append("")
-    lines.append("Диаграмма:")
-    lines.append(f"Падение: {red_bar if red_bar else '—'}")
-    lines.append(f"Рост: {green_bar if green_bar else '—'}")
-    lines.append(f"Нейтрально: {yellow_bar if yellow_bar else '—'}")
-    lines.append("")
-    lines.append("Список:")
-    lines.append("")
 
-    for name, view in bearish:
-        lines.append(f"🔴 {name} — ждёт падение")
-        lines.append(f"   {view}")
+def circle_for_mood(mood):
+    if mood == "bullish":
+        return "🟢"
+    if mood == "bearish":
+        return "🔴"
+    return "🟡"
 
-    for name, view in bullish:
-        lines.append(f"🟢 {name} — ждёт рост")
-        lines.append(f"   {view}")
 
-    for name, view in neutral:
-        lines.append(f"🟡 {name} — нейтрально/неясно")
-        lines.append(f"   {view}")
-
-    base_report = "\n".join(lines)
+def classify_source_moods(rows, recent_context):
+    """
+    One compact OpenAI call for all sources.
+    This costs a little, but lets the agent estimate mood for media too.
+    """
+    source_names = [
+        {
+            "name": r["name"],
+            "market": r["market"],
+            "role": r["role"],
+            "saved_mood": r["mood"]
+        }
+        for r in rows
+    ]
 
     prompt = f"""
-На основе настроения крипто-блогеров сделай короткий вывод для HiFi Trade.
+Ты анализируешь настроение crypto/BTC инфополя для YouTube-канала HiFi Trade.
 
-Данные:
-{base_report}
+Нужно классифицировать КАЖДЫЙ источник:
+- bullish = скорее ждёт рост / позитивный рыночный тон
+- bearish = скорее ждёт падение / риск / негативный рыночный тон
+- neutral = нет явного прогноза, новостной/аналитический/смешанный тон
 
-Дай:
-1. Что ждёт большинство
-2. Где может быть ошибка толпы
-3. Контртрендовая идея для ролика
-4. Название ролика
-5. Хук первых 10 секунд
-6. 2 варианта текста на превью
+Правила:
+- если источник медиа, всё равно оцени общий тон по последним найденным заголовкам
+- если данных мало, ставь neutral
+- не выдумывай точные прогнозы
+- верни ТОЛЬКО JSON массив
+- каждый объект: name, market, mood
+- mood только: bullish, bearish, neutral
+- не добавляй объяснения
 
-Кратко.
+Источники:
+{json.dumps(source_names, ensure_ascii=False)}
+
+Последние найденные заголовки:
+{json.dumps(recent_context, ensure_ascii=False)}
 """
 
-    ai_summary = ask_ai(prompt, max_chars=1300)
+    try:
+        response = client.responses.create(
+            model=MODEL_CHEAP,
+            max_output_tokens=1800,
+            input=[
+                {"role": "system", "content": "Ты классификатор настроения crypto/BTC источников. Отвечай только валидным JSON."},
+                {"role": "user", "content": prompt}
+            ]
+        )
 
-    final_report = base_report + "\n\n🎬 Контентный вывод для HiFi Trade:\n" + ai_summary
+        raw = response.output_text or "[]"
+        raw = raw.strip()
 
+        # Try to extract JSON if model wrapped it
+        if raw.startswith("```"):
+            raw = raw.replace("```json", "").replace("```", "").strip()
+
+        parsed = json.loads(raw)
+        mood_map = {}
+
+        for item in parsed:
+            name = item.get("name")
+            mood = item.get("mood", "neutral")
+            if mood not in ["bullish", "bearish", "neutral"]:
+                mood = "neutral"
+            if name:
+                mood_map[name.lower().strip()] = mood
+
+        classified = []
+        for row in rows:
+            key = row["name"].lower().strip()
+            mood = mood_map.get(key)
+
+            if not mood:
+                saved = row.get("mood", "neutral")
+                mood = saved if saved in ["bullish", "bearish", "neutral"] else "neutral"
+
+            classified.append({
+                "name": row["name"],
+                "market": row["market"],
+                "role": row["role"],
+                "mood": mood,
+                "circle": circle_for_mood(mood)
+            })
+
+        return classified
+
+    except Exception:
+        # Fallback: use saved moods, neutral for media/sources
+        fallback = []
+        for row in rows:
+            mood = row.get("mood", "neutral")
+            if mood not in ["bullish", "bearish", "neutral"]:
+                mood = "neutral"
+            fallback.append({
+                "name": row["name"],
+                "market": row["market"],
+                "role": row["role"],
+                "mood": mood,
+                "circle": circle_for_mood(mood)
+            })
+        return fallback
+
+
+def build_blogger_mood_report(classified_rows):
+    ru_rows = [r for r in classified_rows if r["market"] == "RU/CIS"]
+    west_rows = [r for r in classified_rows if r["market"] == "WEST"]
+
+    red_count = sum(1 for r in classified_rows if r["mood"] == "bearish")
+    green_count = sum(1 for r in classified_rows if r["mood"] == "bullish")
+    yellow_count = sum(1 for r in classified_rows if r["mood"] == "neutral")
+    total = len(classified_rows)
+
+    lines = []
+    lines.append("📊 Общее настроение crypto / BTC инфополя")
+    lines.append("")
+    lines.append(f"Всего источников: {total}")
+    lines.append(f"🔴 Медвежий тон: {red_count}")
+    lines.append(f"🟢 Бычий тон: {green_count}")
+    lines.append(f"🟡 Нейтрально/смешанно: {yellow_count}")
+    lines.append("")
+
+    lines.append("RU/CIS:")
+    if ru_rows:
+        for r in ru_rows:
+            lines.append(f"{r['circle']} {r['name']}")
+    else:
+        lines.append("—")
+
+    lines.append("")
+    lines.append("WEST:")
+    if west_rows:
+        for r in west_rows:
+            lines.append(f"{r['circle']} {r['name']}")
+    else:
+        lines.append("—")
+
+    lines.append("")
+    lines.append(build_blogger_takeaway(red_count, green_count, yellow_count, total))
+
+    return "\n".join(lines)
+
+
+def build_blogger_takeaway(red_count, green_count, yellow_count, total):
+    if total == 0:
+        return "🎬 Вывод: список пуст."
+
+    red_share = red_count / total
+    green_share = green_count / total
+
+    if red_share >= 0.45:
+        return (
+            "🎬 Вывод:\n"
+            "Инфополе заметно склоняется к страху/ожиданию падения.\n"
+            "Идея: «Все ждут обвал BTC. Почему рынок может сделать наоборот?»\n"
+            "Хук: «Когда большинство уже стоит в одну сторону, рынок часто наказывает толпу.»\n"
+            "Превью: «ВСЕ ЖДУТ ОБВАЛ» / «ТОЛПА ОШИБАЕТСЯ?»"
+        )
+
+    if green_share >= 0.45:
+        return (
+            "🎬 Вывод:\n"
+            "Инфополе заметно склоняется к росту. Нужно проверить, нет ли перегрева ожиданий.\n"
+            "Идея: «Все снова верят в рост BTC. Где может быть ловушка?»\n"
+            "Хук: «Когда рынок слишком уверен в росте, риск часто уже рядом.»\n"
+            "Превью: «ВСЕ ЖДУТ РОСТ» / «ЛОВУШКА BTC?»"
+        )
+
+    return (
+        "🎬 Вывод:\n"
+        "Инфополе смешанное. Это хороший момент для спокойного разбора социономики.\n"
+        "Идея: «Рынок разделился: BTC готовится к росту или ловушке?»\n"
+        "Хук: «Смотреть нужно не на один прогноз, а на то, как вся толпа распределилась по ожиданиям.»\n"
+        "Превью: «РЫНОК РАЗДЕЛИЛСЯ» / «BTC: КТО ОШИБАЕТСЯ?»"
+    )
+
+
+async def bloggers_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    rows = collect_btc_sentiment_influencers()
+    recent_context = collect_recent_context_for_sources(rows, max_total_items=60)
+    classified = classify_source_moods(rows, recent_context)
+    final_report = build_blogger_mood_report(classified)
     await reply_long(update, final_report)
 
 async def videoidea(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -852,28 +1045,10 @@ WEST:
                 if weekday == blogger_day and current_time == blogger_time:
                     key = f"{date_key}-bloggers"
                     if key not in sent_keys:
-                        bloggers = memory.get("ru_cis_bloggers", [])
-                        results = []
-                        for name in bloggers:
-                            results.extend(youtube_search(name + " биткоин крипта прогноз", max_results=2))
-
-                        prompt = f"""
-Еженедельное настроение RU/CIS блогеров.
-
-Данные:
-{json.dumps(results, ensure_ascii=False, indent=2)}
-
-Формат:
-🟢 Канал — ждёт рост. Причина.
-🔴 Канал — ждёт падение. Причина.
-🟡 Канал — нейтрально. Причина.
-
-В конце:
-- общий настрой
-- где толпа может ошибаться
-- 3 идеи для HiFi Trade
-"""
-                        text = "📊 Настроение RU/CIS блогеров\n\n" + ask_ai(prompt)
+                        rows = collect_btc_sentiment_influencers()
+                        recent_context = collect_recent_context_for_sources(rows, max_total_items=60)
+                        classified = classify_source_moods(rows, recent_context)
+                        text = "📊 Еженедельное настроение инфополя\n\n" + build_blogger_mood_report(classified)
                         await send_long(app, chat_id, text)
                         sent_keys.add(key)
 
