@@ -3,7 +3,7 @@
   "channel_url": "https://www.youtube.com/@hifitrade",
   "reference_video": "https://youtu.be/sw2q3R1OcZ4?si=uoDbyeqlBYM-HZOG",
   "language_market": "Russian and CIS crypto/investing audience",
-  "main_goal": "grow YouTube channel by saving research time, finding strong content opportunities, monitoring news, bloggers, audience sentiment and YouTube gaps",
+  "main_goal": "grow YouTube channel by saving research time, finding strong content opportunities, monitoring news, crypto bloggers, audience sentiment and YouTube gaps",
   "style": "serious, analytical, strict, clean, no hype, no scam, no memecoins",
   "forbidden_topics": [
     "meme coins",
@@ -52,107 +52,73 @@
     "Факич",
     "Ридван",
     "HAMAHA",
-    "Крипто Патруль",
-    "РБК Крипто",
-    "ForkLog",
-    "Bits.media",
-    "Crypto Family",
-    "Pro Blockchain",
-    "CRYPTUS",
-    "Крипто Журнал",
-    "Биткоин База",
-    "Roman Nekrasov",
-    "Happy Coin News",
-    "MarsDAO",
-    "Bitkogan",
-    "InvestFuture",
-    "Финансовая Независимость",
-    "Хомяк Инвестор",
-    "КриптоМакс",
-    "Тимофей Мартынов",
-    "Смартлаб",
-    "Александр Герчик",
-    "Алексей Марков",
-    "Трейдер 80/20"
+    "Крипто Патруль"
   ],
   "ru_cis_sentiment_watchlist": [
     {
       "name": "InvTrading",
       "last_known_mood": "bearish",
-      "last_known_view": "держит шорт BTC от 80k с целями 45-53k",
-      "source_note": "user-provided, should be rechecked weekly"
+      "last_known_view": "держит шорт BTC от 80k с целями 45-53k"
     },
     {
       "name": "MrMozart",
       "last_known_mood": "bearish",
-      "last_known_view": "держит шорт BTC от 81k и ждёт падение ниже 57k",
-      "source_note": "user-provided, should be rechecked weekly"
+      "last_known_view": "держит шорт BTC от 81k и ждёт падение ниже 57k"
     },
     {
       "name": "PifagorTrade",
       "last_known_mood": "bearish",
-      "last_known_view": "ожидает падение BTC из зоны 80-85k в диапазон 38-45k",
-      "source_note": "user-provided, should be rechecked weekly"
+      "last_known_view": "ожидает падение BTC из зоны 80-85k в диапазон 38-45k"
     },
     {
       "name": "Рафаэль Слезы Сатоши",
       "last_known_mood": "bearish",
-      "last_known_view": "локально допускает отскок к 90k, глобально ждёт 50-45k",
-      "source_note": "user-provided, should be rechecked weekly"
+      "last_known_view": "локально допускает отскок к ~90k, глобально ждёт 50-45k"
     },
     {
       "name": "Юра Франциско",
       "last_known_mood": "bearish",
-      "last_known_view": "не ждёт BTC выше 85-86k, ожидает падение в диапазон 20-60k",
-      "source_note": "user-provided, should be rechecked weekly"
+      "last_known_view": "не ждёт BTC выше 85-86k, ожидает падение в диапазон 20-60k"
     },
     {
       "name": "IKIGAI",
       "last_known_mood": "bearish",
-      "last_known_view": "ждёт падение BTC ниже 60k",
-      "source_note": "user-provided, should be rechecked weekly"
+      "last_known_view": "ждёт падение BTC ниже 60k"
     },
     {
       "name": "Биткоин Адепт",
       "last_known_mood": "bearish",
-      "last_known_view": "ожидает слив BTC к 56-57k или даже к 40k",
-      "source_note": "user-provided, should be rechecked weekly"
+      "last_known_view": "ожидает резкий слив BTC к 56-57k или даже к 40k"
     },
     {
       "name": "Разумный Инвестор",
       "last_known_mood": "bearish",
-      "last_known_view": "ожидает падение BTC к концу года в зону 30-50k",
-      "source_note": "user-provided, should be rechecked weekly"
+      "last_known_view": "ожидает падение BTC к концу года в зону 30-50k"
     },
     {
       "name": "Cryptus",
       "last_known_mood": "bearish",
-      "last_known_view": "видит дно BTC ближе к концу 2026 года около 30k",
-      "source_note": "user-provided, should be rechecked weekly"
+      "last_known_view": "видит дно BTC ближе к концу 2026 года около 30k"
     },
     {
       "name": "Богдан Где Иксы",
       "last_known_mood": "bearish",
-      "last_known_view": "держит шорт BTC с целью 65.9-70.5k",
-      "source_note": "user-provided, should be rechecked weekly"
+      "last_known_view": "держит шорт BTC с целью 65.9-70.5k"
     },
     {
       "name": "Факич",
       "last_known_mood": "bearish",
-      "last_known_view": "считает, что BTC из зоны 80-85k повалится вниз",
-      "source_note": "user-provided, should be rechecked weekly"
+      "last_known_view": "считает, что BTC из зоны 80-85k дальше повалится вниз"
     },
     {
       "name": "Ридван",
       "last_known_mood": "bearish",
-      "last_known_view": "ранее ждал обвал BTC к 40-50k",
-      "source_note": "user-provided, should be rechecked weekly"
+      "last_known_view": "ранее ждал обвал BTC к 40-50k"
     },
     {
       "name": "HAMAHA",
       "last_known_mood": "bearish",
-      "last_known_view": "ушёл с крипты, так как ожидает дальнейшее падение",
-      "source_note": "user-provided, should be rechecked weekly"
+      "last_known_view": "ушёл с крипты, так как ожидает дальнейшее падение"
     }
   ],
   "west_bloggers": [
@@ -166,7 +132,6 @@
     "Crypto Banter",
     "The Modern Investor",
     "Anthony Pompliano",
-    "Andrei Jikh",
     "DataDash",
     "Glassnode",
     "Into The Cryptoverse",
@@ -178,15 +143,16 @@
     "What Bitcoin Did"
   ],
   "content_strategy_rules": [
+    "Only track crypto/investing bloggers for blogger mood reports.",
+    "Exclude general finance bloggers unless they actively discuss crypto market direction.",
+    "Blogger mood report must include every blogger from ru_cis_sentiment_watchlist.",
+    "Use compact diagram format to save OpenAI credits.",
     "If most bloggers are bearish but BTC keeps growing, suggest contrarian video ideas.",
-    "If most bloggers are bullish after a big move, warn about late crowd behavior.",
     "Always separate blogger mood from real market structure.",
     "Use blogger consensus as content opportunity, not as trading advice.",
-    "Look for topics where Russian YouTube is emotional but lacks calm data-driven analysis.",
     "Prioritize serious narratives over coin hype.",
     "Every video idea must include title, hook, script structure and 3 clean thumbnail concepts.",
-    "Every Shorts idea must include first phrase, script and thumbnail text.",
-    "Do not recommend scam-like, low-cap, memecoin or pump content."
+    "Every Shorts idea must include first phrase, script and thumbnail text."
   ],
   "report_timezone": "Europe/Moscow",
   "daily_news_time": "09:00",
