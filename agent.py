@@ -3,7 +3,7 @@ import json
 import asyncio
 import requests
 import feedparser
-from datetime import datetime, time
+from datetime import datetime
 from zoneinfo import ZoneInfo
 from openai import OpenAI
 from telegram import Update
@@ -302,11 +302,6 @@ async def reply_long(update, text):
     for i in range(0, len(text), 3500):
         await update.message.reply_text(text[i:i+3500])
 
-def get_saved_chat_id():
-    memory = load_memory()
-    chat_id = memory.get("telegram_chat_id", "")
-    return chat_id if chat_id else None
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "HiFi Trade AI Growth Team запущен ✅\n\n"
@@ -369,31 +364,91 @@ WEST YouTube:
 
 async def bloggers_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     memory = load_memory()
-    bloggers = memory.get("ru_cis_bloggers", [])
+    watchlist = memory.get("ru_cis_sentiment_watchlist", [])
 
-    results = []
-    for name in bloggers:
-        results.extend(youtube_search(name + " биткоин крипта прогноз", max_results=2))
+    if not watchlist:
+        await update.message.reply_text(
+            "Список блогеров пуст. Проверь ru_cis_sentiment_watchlist в memory.json."
+        )
+        return
+
+    bearish = []
+    bullish = []
+    neutral = []
+
+    for item in watchlist:
+        mood = item.get("last_known_mood", "neutral")
+        name = item.get("name", "Unknown")
+        view = item.get("last_known_view", "")
+
+        if mood == "bearish":
+            bearish.append((name, view))
+        elif mood == "bullish":
+            bullish.append((name, view))
+        else:
+            neutral.append((name, view))
+
+    total = len(watchlist)
+    red_count = len(bearish)
+    green_count = len(bullish)
+    yellow_count = len(neutral)
+
+    red_bar = "🔴" * red_count
+    green_bar = "🟢" * green_count
+    yellow_bar = "🟡" * yellow_count
+
+    lines = []
+    lines.append("📊 Настроение RU/CIS крипто-блогеров")
+    lines.append("")
+    lines.append(f"Всего в списке: {total}")
+    lines.append(f"🔴 Медвежьи: {red_count}")
+    lines.append(f"🟢 Бычьи: {green_count}")
+    lines.append(f"🟡 Нейтральные: {yellow_count}")
+    lines.append("")
+    lines.append("Диаграмма:")
+    lines.append(f"Падение: {red_bar if red_bar else '—'}")
+    lines.append(f"Рост: {green_bar if green_bar else '—'}")
+    lines.append(f"Нейтрально: {yellow_bar if yellow_bar else '—'}")
+    lines.append("")
+    lines.append("Список:")
+    lines.append("")
+
+    for name, view in bearish:
+        lines.append(f"🔴 {name} — ждёт падение")
+        lines.append(f"   {view}")
+
+    for name, view in bullish:
+        lines.append(f"🟢 {name} — ждёт рост")
+        lines.append(f"   {view}")
+
+    for name, view in neutral:
+        lines.append(f"🟡 {name} — нейтрально/неясно")
+        lines.append(f"   {view}")
+
+    base_report = "\n".join(lines)
 
     prompt = f"""
-Проанализируй настроение популярных российских и СНГ crypto/investing блогеров.
+На основе настроения крипто-блогеров сделай короткий вывод для HiFi Trade.
 
-Данные YouTube:
-{json.dumps(results, ensure_ascii=False, indent=2)}
+Данные:
+{base_report}
 
-Формат ответа строго такой:
+Дай:
+1. Что ждёт большинство
+2. Где может быть ошибка толпы
+3. Контртрендовая идея для ролика
+4. Название ролика
+5. Хук первых 10 секунд
+6. 2 варианта текста на превью
 
-🟢 Название канала — ждёт рост. Причина: ...
-🔴 Название канала — ждёт падение. Причина: ...
-🟡 Название канала — нейтрально/неясно. Причина: ...
-
-В конце:
-1. Общий настрой рынка блогеров
-2. Что они массово ждут
-3. Где может быть контртрендовая идея для HiFi Trade
-4. 3 идеи роликов на основе настроения блогеров
+Кратко.
 """
-    await reply_long(update, ask_ai(prompt))
+
+    ai_summary = ask_ai(prompt, max_chars=1300)
+
+    final_report = base_report + "\n\n🎬 Контентный вывод для HiFi Trade:\n" + ai_summary
+
+    await reply_long(update, final_report)
 
 async def videoidea(update: Update, context: ContextTypes.DEFAULT_TYPE):
     news = get_rss_news()
@@ -765,7 +820,6 @@ async def scheduled_loop(app):
                 if current_time == daily_time:
                     key = f"{date_key}-daily"
                     if key not in sent_keys:
-                        fake_context = app
                         news = get_rss_news()
                         ru = youtube_search("криптовалюта биткоин рынок сегодня", max_results=6)
                         west = youtube_search("bitcoin crypto market today macro", max_results=6)
