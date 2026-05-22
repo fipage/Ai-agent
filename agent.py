@@ -11,7 +11,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").replace("\\n", "").replace("\n", "").replace("\r", "").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").replace("\\n", "").replace("\n", "").replace("\r", "").strip()
-YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").replace("\\n", "").replace("\n", "").replace("\r", "").strip()
+YOUTUBE_API_KEY = os.g etenv("YOUTUBE_API_KEY", "").replace("\\n", "").replace("\n", "").replace("\r", "").strip()
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -122,6 +122,7 @@ QUALITY_FRAMEWORK = """
 - Не выдавай слабые идеи.
 - Если вариант ниже 8/10 по общей оценке — переделай его.
 - В финальный ответ выводи только лучший вариант или топ-3 лучших.
+- Память не является вечным запретом: востребованные темы можно возвращать после паузы с новым углом.
 - Не показывай слабые черновики.
 - Для превью: стиль строгий, чистый, понятный, без грязи, без перегруза.
 - На превью должно быть 2-5 слов, не длинная фраза.
@@ -233,6 +234,217 @@ def extract_first_title(text):
                 return cleaned[:200]
 
     return lines[0].replace("**", "").strip(" -—:«»\"")[:200] if lines else ""
+
+
+def get_recent_memory_context(limit=20):
+    data = load_success()
+    used = data.get("used_ideas", [])[-limit:]
+    notes = data.get("weekly_notes", [])[-10:]
+
+    return {
+        "recent_used_ideas": used,
+        "recent_reports": notes
+    }
+
+
+def get_memory_policy_context():
+    """
+    Memory is not a permanent ban.
+    It works as a cooldown:
+    - 0-14 days: avoid repeating the same idea.
+    - 15-30 days: may return only with a clearly new angle/news hook.
+    - 30+ days: evergreen topics may return with updated framing.
+    """
+    data = load_success()
+    used = data.get("used_ideas", [])
+
+    now = datetime.utcnow()
+    recent_14 = []
+    older_30 = []
+    evergreen_candidates = []
+
+    evergreen_keywords = [
+        "btc", "bitcoin", "биткоин", "eth", "ethereum", "эфир",
+        "etf", "ликвидность", "liquidity", "фрс", "fed",
+        "ставка", "доминация", "dominance", "dxy", "инфляция",
+        "регуляция", "altseason", "альтсезон", "макро"
+    ]
+
+    for item in used:
+        created_raw = item.get("created_at", "")
+        try:
+            created = datetime.fromisoformat(created_raw.replace("Z", ""))
+            age_days = (now - created).days
+        except Exception:
+            age_days = 999
+
+        title = item.get("title", "")
+        summary = item.get("summary", "")
+        combined = f"{title} {summary}".lower()
+
+        compact = {
+            "kind": item.get("kind", ""),
+            "title": title,
+            "age_days": age_days,
+            "source": item.get("source", "")
+        }
+
+        if age_days <= 14:
+            recent_14.append(compact)
+        elif age_days <= 30:
+            older_30.append(compact)
+        else:
+            if any(k in combined for k in evergreen_keywords):
+                evergreen_candidates.append(compact)
+
+    return {
+        "memory_policy": {
+            "hot_cooldown": "0-14 days: do not repeat the same idea",
+            "warm_cooldown": "15-30 days: topic may return only with a clearly new angle or new event",
+            "evergreen_return": "30+ days: evergreen BTC/macro/liquidity/ETF topics may return with updated framing"
+        },
+        "avoid_repeating_now": recent_14[-25:],
+        "may_return_only_with_new_angle": older_30[-25:],
+        "evergreen_can_return_with_updated_angle": evergreen_candidates[-25:]
+    }
+
+
+def inject_memory_policy(prompt):
+    policy = get_memory_policy_context()
+    return f"""
+Память агента и политика повторов:
+{json.dumps(policy, ensure_ascii=False, indent=2)}
+
+Важно:
+- Память НЕ означает вечный запрет темы.
+- Не повторяй идеи из avoid_repeating_now.
+- Идеи из may_return_only_with_new_angle можно использовать только с новым инфоповодом/новым углом.
+- Идеи из evergreen_can_return_with_updated_angle можно возвращать, если тема снова востребована.
+- Вечные темы BTC/ETF/ликвидность/ФРС/ETH/доминация можно возвращать циклами, но не тем же самым заголовком.
+
+{prompt}
+"""
+
+
+def passes_quality_gate(answer):
+    """
+    Simple gate: the model must explicitly contain 8/10, 9/10 or 10/10.
+    If not, the agent treats it as not strong enough for proactive sending.
+    """
+    if not answer:
+        return False
+
+    normalized = answer.replace(" ", "")
+    strong_markers = [
+        "8/10", "8.5/10", "9/10", "9.5/10", "10/10",
+        "8из10", "9из10", "10из10"
+    ]
+
+    return any(marker in normalized for marker in strong_markers)
+
+
+def ask_ai_strong(prompt, max_chars=3000):
+    """
+    Generates only strong content. Memory is a cooldown, not a permanent ban.
+    If the first answer is weak, asks once to improve it to 8/10+.
+    """
+    prompt_with_memory = inject_memory_policy(prompt)
+    answer = ask_ai(prompt_with_memory, max_chars=max_chars)
+
+    if passes_quality_gate(answer):
+        return answer
+
+    improve_prompt = f"""
+Предыдущий вариант слабый или без явной оценки 8/10+.
+
+Переделай. Нужно:
+- только один лучший вариант
+- общая оценка 8/10 или выше
+- без длинного текста
+- без механического повтора старых идей
+- если тема уже была, верни её только с новым углом или новым инфоповодом
+- без мусора и хайпа
+- объясни, почему это 8/10+
+
+Исходный запрос с политикой памяти:
+{prompt_with_memory}
+
+Слабый ответ:
+{answer}
+"""
+    improved = ask_ai(improve_prompt, max_chars=max_chars)
+
+    if passes_quality_gate(improved):
+        return improved
+
+    return (
+        "⚠️ Сегодня не нашёл достаточно сильный вариант 8/10+.\n"
+        "Лучше не публиковать слабую тему. Нужен новый инфоповод или другой угол."
+    )
+
+
+def build_weekly_content_plan():
+    memory_context = get_recent_memory_context(limit=30)
+
+    news = fetch_rss_news()[:15]
+    ru = youtube_search("биткоин крипта рынок BTC", max_results=8)
+    west = youtube_search("bitcoin crypto market macro", max_results=8)
+
+    prompt = f"""
+Составь автоматический недельный контент-план для YouTube-канала HiFi Trade.
+
+Контекст памяти агента, чтобы НЕ повторяться:
+{json.dumps(memory_context, ensure_ascii=False, indent=2)}
+
+Новости:
+{json.dumps(news, ensure_ascii=False, indent=2)}
+
+RU/CIS YouTube:
+{json.dumps(ru, ensure_ascii=False, indent=2)}
+
+WEST YouTube:
+{json.dumps(west, ensure_ascii=False, indent=2)}
+
+Нужно:
+- план на 7 дней
+- без лишней воды
+- только сильные темы 8/10+
+- не повторять идеи из памяти за последние 14 дней
+- старые востребованные темы можно вернуть только с новым углом/инфоповодом
+- не предлагать мемкоины, скам, low-cap мусор
+- вторник: большой ролик
+- понедельник и четверг: Shorts
+- остальные дни: наблюдение/резерв/подготовка
+- каждая тема максимум 4 строки
+
+Формат:
+Пн:
+- Формат:
+- Тема:
+- Оценка:
+- Почему стоит делать:
+
+Вт:
+...
+
+В конце:
+1. Главная тема недели
+2. Резервная тема
+3. Что НЕ трогать на этой неделе
+"""
+
+    answer = ask_ai_strong(prompt, max_chars=3500)
+    remember_report("auto_weekly_content_plan", answer)
+
+    # remember individual plan as generated content too
+    remember_generated_content(
+        kind="weekly_content_plan",
+        title="Недельный контент-план",
+        summary=answer,
+        source="auto_weekly_plan"
+    )
+
+    return answer
 
 
 def get_timezone():
@@ -443,6 +655,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/winners — анализ успешных роликов\n"
         "/scoreidea идея — оценить идею /10\n"
         "/scoretitle название — оценить заголовок /10\n"
+        "/weekly_plan — проверить авто-контент-план\n"
         "/memory_status — посмотреть, что агент запомнил"
     )
 
@@ -803,7 +1016,7 @@ WEST:
 8. Лучший вариант превью
 9. Почему это может привести подписчиков
 """
-    answer = ask_ai(prompt)
+    answer = ask_ai_strong(prompt, max_chars=3200)
     remember_generated_content(
         kind="video_idea",
         title=extract_first_title(answer),
@@ -839,7 +1052,7 @@ RU/CIS YouTube:
 6. Почему это может привести подписчиков
 7. Чего не говорить
 """
-    answer = ask_ai(prompt)
+    answer = ask_ai_strong(prompt, max_chars=2600)
     remember_generated_content(
         kind="shorts_idea",
         title=extract_first_title(answer),
@@ -1182,10 +1395,16 @@ async def scoretitle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_long(update, ask_ai(prompt, max_chars=2200))
 
 
+async def weekly_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    answer = build_weekly_content_plan()
+    await reply_long(update, "🗓 Контент-план на неделю\n\n" + answer)
+
+
 async def memory_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_success()
     used = data.get("used_ideas", [])
     notes = data.get("weekly_notes", [])
+    policy = get_memory_policy_context()
 
     last_ideas = used[-5:]
     lines = []
@@ -1193,6 +1412,15 @@ async def memory_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append("")
     lines.append(f"Запомнено идей: {len(used)}")
     lines.append(f"Запомнено отчётов: {len(notes)}")
+    lines.append("")
+    lines.append("Политика повторов:")
+    lines.append("- 0–14 дней: не повторять")
+    lines.append("- 15–30 дней: можно только с новым инфоповодом")
+    lines.append("- 30+ дней: вечные темы можно вернуть с новым углом")
+    lines.append("")
+    lines.append(f"В паузе 0–14 дней: {len(policy.get('avoid_repeating_now', []))}")
+    lines.append(f"Можно вернуть с новым углом: {len(policy.get('may_return_only_with_new_angle', []))}")
+    lines.append(f"Вечные темы 30+ дней: {len(policy.get('evergreen_can_return_with_updated_angle', []))}")
     lines.append("")
     lines.append("Последние идеи:")
 
@@ -1292,6 +1520,14 @@ WEST:
                         await send_long(app, chat_id, text)
                         sent_keys.add(key)
 
+                if weekday == weekly_plan_day and current_time == weekly_plan_time:
+                    key = f"{date_key}-weekly-plan"
+                    if key not in sent_keys:
+                        answer = build_weekly_content_plan()
+                        text = "🗓 Автоматический контент-план на неделю\n\n" + answer
+                        await send_long(app, chat_id, text)
+                        sent_keys.add(key)
+
                 if weekday == video_day and current_time == video_time:
                     key = f"{date_key}-videoidea"
                     if key not in sent_keys:
@@ -1322,7 +1558,7 @@ WEST:
 8. Текст на превью
 9. Почему это может привести подписчиков
 """
-                        answer = ask_ai(prompt)
+                        answer = ask_ai_strong(prompt, max_chars=3200)
                         remember_generated_content(
                             kind="video_idea",
                             title=extract_first_title(answer),
@@ -1356,7 +1592,7 @@ RU/CIS:
 5. Текст на превью
 6. Почему это может привести подписчиков
 """
-                        answer = ask_ai(prompt)
+                        answer = ask_ai_strong(prompt, max_chars=2600)
                         remember_generated_content(
                             kind="shorts_idea",
                             title=extract_first_title(answer),
@@ -1402,6 +1638,7 @@ def main():
     app.add_handler(CommandHandler("winners", winners))
     app.add_handler(CommandHandler("scoreidea", scoreidea))
     app.add_handler(CommandHandler("scoretitle", scoretitle))
+    app.add_handler(CommandHandler("weekly_plan", weekly_plan))
     app.add_handler(CommandHandler("memory_status", memory_status))
     app.add_handler(CommandHandler("cheap", cheap))
 
