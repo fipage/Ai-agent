@@ -100,6 +100,32 @@ SYSTEM_PROMPT = """
 Кратко, но достаточно полезно.
 """
 
+QUALITY_FRAMEWORK = """
+Оценивай каждую идею по 10-балльной шкале:
+
+1. CTR /10 — насколько зритель захочет кликнуть.
+2. Clarity /10 — понятно ли зрителю, о чём ролик/Shorts/превью.
+3. Curiosity gap /10 — есть ли интрига без дешёвого хайпа.
+4. Audience interest /10 — насколько тема совпадает с интересом crypto/инвест-аудитории.
+5. Algorithm potential /10 — есть ли шанс на удержание, комментарии, досмотры и рекомендации YouTube.
+6. Seriousness /10 — насколько тема выглядит серьёзно, без скама и мусора.
+7. Subscriber potential /10 — может ли тема привести новых подписчиков.
+8. Timeliness /10 — актуальность сейчас.
+9. Evergreen value /10 — будет ли тема жить дольше одного дня.
+10. Differentiation /10 — отличается ли тема от конкурентов.
+
+Правило качества:
+- Не выдавай слабые идеи.
+- Если вариант ниже 8/10 по общей оценке — переделай его.
+- В финальный ответ выводи только лучший вариант или топ-3 лучших.
+- Не показывай слабые черновики.
+- Для превью: стиль строгий, чистый, понятный, без грязи, без перегруза.
+- На превью должно быть 2-5 слов, не длинная фраза.
+- Заголовок должен быть понятный, цепляющий, без кликбейта уровня скама.
+- Хук должен удерживать первые 10 секунд.
+- Всегда объясняй, почему выбранный вариант получил высокую оценку.
+"""
+
 def load_json(path, default):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -266,13 +292,19 @@ def ask_ai(prompt, max_chars=3500):
 Память успешных роликов и использованных идей:
 {json.dumps(success, ensure_ascii=False, indent=2)}
 
+Система оценки качества:
+{QUALITY_FRAMEWORK}
+
 Правила:
 - не предлагай мемкоины, скам и low-cap мусор
 - думай как команда продвижения канала
-- оценивай идеи через интерес аудитории и YouTube growth
-- если тема слабая, скажи прямо
+- оценивай идеи через интерес аудитории, удержание и YouTube growth
+- если тема слабая, скажи прямо и предложи замену
 - ищи недопокрытые темы
 - давай готовые практичные решения
+- сначала внутренне оцени варианты по шкале 1-10
+- в ответ выводи только варианты с общей оценкой 8/10 и выше
+- если не можешь получить 8/10, напиши, что тема слабая, и предложи более сильный угол
 
 Запрос:
 {prompt}
@@ -321,7 +353,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/trendwest — западные narratives\n"
         "/opportunity — окна роста\n"
         "/remember_success ссылка — запомнить успешный ролик\n"
-        "/winners — анализ успешных роликов"
+        "/winners — анализ успешных роликов\n"
+        "/scoreidea идея — оценить идею /10\n"
+        "/scoretitle название — оценить заголовок /10"
     )
 
 async def setchat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -359,6 +393,9 @@ WEST YouTube:
 9. Хук
 10. Краткий текст ролика
 11. 3 строгих превью на выбор с текстом
+12. Оценка каждого превью по 10-балльной шкале
+13. Финальный лучший вариант: title + hook + preview
+14. Почему это 8/10 или выше
 """
     await reply_long(update, ask_ai(prompt))
 
@@ -674,8 +711,11 @@ WEST:
    - концепт
    - текст на превью
    - эмоция/визуал
-10. Что сказать в конце для подписки
-11. Почему это не мусор
+   - оценка /10
+10. Лучший вариант превью и почему
+11. Оценка идеи ролика по 10-балльной шкале
+12. Что сказать в конце для подписки
+13. Почему это не мусор
 """
     await reply_long(update, ask_ai(prompt))
 
@@ -702,8 +742,10 @@ RU/CIS YouTube:
    - строгий концепт
    - текст на превью
    - визуальная идея
-6. Почему это может привести подписчиков
-7. Чего не говорить, чтобы не выглядеть как хайп
+   - оценка /10
+6. Оценка Shorts по 10-балльной шкале
+7. Почему это может привести подписчиков
+8. Чего не говорить, чтобы не выглядеть как хайп
 """
     await reply_long(update, ask_ai(prompt))
 
@@ -770,8 +812,10 @@ async def review(update: Update, context: ContextTypes.DEFAULT_TYPE):
 5. Что слабое
 6. Улучшенное название
 7. Хук первых 10 секунд
-8. 3 улучшенных превью
-9. 5 follow-up роликов
+8. 3 улучшенных превью с оценкой каждого /10
+9. Лучший вариант превью
+10. Итоговая оценка ролика /10
+11. 5 follow-up роликов с оценкой потенциала /10
 """
     await reply_long(update, ask_ai(prompt))
 
@@ -809,7 +853,9 @@ Thumbnail URL:
 2. Что может быть непонятно зрителю
 3. 3 строгих варианта превью
 4. Текст на каждом превью
-5. Как сохранить интригу без грязного хайпа
+5. Оценка каждого превью /10
+6. Лучший вариант превью
+7. Как сохранить интригу без грязного хайпа
 """
     await reply_long(update, ask_ai(prompt))
 
@@ -841,6 +887,8 @@ async def monitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
 5. 3 long-form идеи
 6. 3 Shorts
 7. Лучшая тема сейчас
+8. Оценка лучшей темы /10
+9. Почему она сильнее остальных
 """
     await reply_long(update, ask_ai(prompt))
 
@@ -874,7 +922,8 @@ WEST:
 4. Где настроение на падение
 5. Перегретые темы
 6. Недопокрытые темы
-7. 5 идей для HiFi Trade
+7. 5 идей для HiFi Trade с оценкой каждой /10
+8. Лучшая идея и почему
 """
     await reply_long(update, ask_ai(prompt))
 
@@ -892,7 +941,8 @@ RU/CIS crypto YouTube тренды:
 2. Где шум
 3. Что перегрето
 4. Что раскрыть умнее
-5. 5 тем для HiFi Trade
+5. 5 тем для HiFi Trade с оценкой каждой /10
+6. Лучшая тема и почему
 """
     await reply_long(update, ask_ai(prompt))
 
@@ -909,7 +959,8 @@ async def trendwest(update: Update, context: ContextTypes.DEFAULT_TYPE):
 1. Какие narratives появляются
 2. Что может прийти в RU/CIS позже
 3. Что HiFi Trade может раскрыть раньше
-4. 5 идей роликов
+4. 5 идей роликов с оценкой каждой /10
+5. Лучшая идея и почему
 """
     await reply_long(update, ask_ai(prompt))
 
@@ -976,6 +1027,57 @@ async def winners(update: Update, context: ContextTypes.DEFAULT_TYPE):
 4. 5 новых идей
 """
     await reply_long(update, ask_ai(prompt))
+
+async def scoreidea(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = " ".join(context.args).strip()
+    if not query:
+        await update.message.reply_text("Используй: /scoreidea идея_ролика")
+        return
+
+    prompt = f"""
+Оцени идею ролика для HiFi Trade по 10-балльной шкале.
+
+Идея:
+{query}
+
+Дай:
+1. Общая оценка /10
+2. CTR /10
+3. Удержание /10
+4. Интерес аудитории /10
+5. Потенциал подписок /10
+6. Риски темы
+7. Как усилить до 9/10
+8. Лучшее название
+9. Хук первых 10 секунд
+10. 3 превью с оценкой /10
+"""
+    await reply_long(update, ask_ai(prompt, max_chars=2500))
+
+
+async def scoretitle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = " ".join(context.args).strip()
+    if not query:
+        await update.message.reply_text("Используй: /scoretitle название_ролика")
+        return
+
+    prompt = f"""
+Оцени название ролика для HiFi Trade.
+
+Название:
+{query}
+
+Дай:
+1. Оценка названия /10
+2. Понятность /10
+3. Интрига /10
+4. CTR potential /10
+5. Что слабое
+6. 5 улучшенных вариантов названия
+7. Лучший вариант и почему
+"""
+    await reply_long(update, ask_ai(prompt, max_chars=2200))
+
 
 async def cheap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).strip()
@@ -1146,6 +1248,8 @@ def main():
     app.add_handler(CommandHandler("opportunity", opportunity))
     app.add_handler(CommandHandler("remember_success", remember_success))
     app.add_handler(CommandHandler("winners", winners))
+    app.add_handler(CommandHandler("scoreidea", scoreidea))
+    app.add_handler(CommandHandler("scoretitle", scoretitle))
     app.add_handler(CommandHandler("cheap", cheap))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
