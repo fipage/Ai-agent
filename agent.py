@@ -39,7 +39,7 @@ MEMORY_FILE = "memory.json"
 SUCCESS_FILE = "success_memory.json"
 
 MODEL_CHEAP = "gpt-4.1-mini"
-MAX_OUTPUT_TOKENS = 1000
+MAX_OUTPUT_TOKENS = 850
 
 SYSTEM_PROMPT = """
 Ты не обычный Telegram-бот.
@@ -363,7 +363,7 @@ def passes_quality_gate(answer):
     return any(marker in normalized for marker in strong_markers)
 
 
-def ask_ai_strong(prompt, max_chars=3000):
+def ask_ai_strong(prompt, max_chars=2400):
     """
     Generates only strong content. Memory is a cooldown, not a permanent ban.
     If the first answer is weak, asks once to improve it to 8/10+.
@@ -381,6 +381,7 @@ def ask_ai_strong(prompt, max_chars=3000):
 - только один лучший вариант
 - общая оценка 8/10 или выше
 - без длинного текста
+- ответ должен помещаться в одно Telegram-сообщение
 - без механического повтора старых идей
 - если тема уже была, верни её только с новым углом или новым инфоповодом
 - без мусора и хайпа
@@ -425,9 +426,12 @@ RU/CIS YouTube:
 WEST YouTube:
 {json.dumps(west, ensure_ascii=False, indent=2)}
 
+RU/CIS конкуренты:
+{json.dumps(competitor_topics, ensure_ascii=False, indent=2)}
+
+Ответ должен уместиться в одно Telegram-сообщение.
 Нужно:
 - план на 7 дней
-- без лишней воды
 - только сильные темы 8/10+
 - не повторять идеи из памяти за последние 14 дней
 - старые востребованные темы можно вернуть только с новым углом/инфоповодом
@@ -435,25 +439,41 @@ WEST YouTube:
 - вторник: большой ролик
 - понедельник и четверг: Shorts
 - остальные дни: наблюдение/резерв/подготовка
-- каждая тема максимум 4 строки
+- каждый день максимум 2 строки
 
-Формат:
-Пн:
-- Формат:
-- Тема:
-- Оценка:
-- Почему стоит делать:
+Формат строго:
 
-Вт:
+🗓 План недели
+
+Пн — Shorts:
+Тема ... / Оценка .../10
+
+Вт — Ролик:
+Тема ... / Оценка .../10
+
+Ср — Резерв:
 ...
 
-В конце:
-1. Главная тема недели
-2. Резервная тема
-3. Что НЕ трогать на этой неделе
+Чт — Shorts:
+...
+
+Пт — Подготовка:
+...
+
+Сб — Наблюдение:
+...
+
+Вс — Итог:
+...
+
+Главная тема недели:
+...
+
+Не трогать:
+...
 """
 
-    answer = ask_ai_strong(prompt, max_chars=3500)
+    answer = ask_ai_strong(prompt, max_chars=2300)
     remember_report("auto_weekly_content_plan", answer)
 
     # remember individual plan as generated content too
@@ -789,7 +809,8 @@ def ask_ai(prompt, max_chars=3500):
 - в ответ выводи только варианты с общей оценкой 8/10 и выше
 - если не можешь получить 8/10, напиши, что тема слабая, и предложи более сильный угол
 - пиши максимально сжато
-- каждая тема: максимум 4-6 строк
+- каждая тема: максимум 3-5 строк
+- старайся уместить ответ в одно Telegram-сообщение
 - без длинных вступлений
 - без повторения одних и тех же причин
 - не добавляй разделы, которых нет в запросе
@@ -873,8 +894,8 @@ WEST YouTube:
 {json.dumps(west_youtube, ensure_ascii=False, indent=2)}
 
 Нужно:
-1. 5-7 самых популярных и обсуждаемых новостей из крипты и инвестиций.
-2. Для каждой новости строго 4 строки:
+1. 5 самых популярных и обсуждаемых новостей из крипты и инвестиций.
+2. Для каждой новости строго 3-4 строки:
    - Заголовок
    - Источник
    - Суть: 1 предложение
@@ -1192,22 +1213,44 @@ RU/CIS:
 WEST:
 {json.dumps(west, ensure_ascii=False, indent=2)}
 
+Ответ должен уместиться в одно Telegram-сообщение.
 Нужно выдать только ОДНУ лучшую идею.
-Формат:
-1. Название ролика
-2. Оценка идеи /10
-3. Почему кликнут: 1-2 предложения
-4. Хук первых 10 секунд
-5. Структура ролика: 5 коротких пунктов
-6. Краткий текст ролика: 8-10 коротких тезисов
-7. 3 превью:
-   - концепт
-   - текст 2-5 слов
-   - оценка /10
-8. Лучший вариант превью
-9. Почему это может привести подписчиков
+Она должна быть не копией конкурентов, а более сильным углом на фоне их тем.
+
+Формат строго:
+
+🎬 Идея ролика
+
+Название:
+...
+
+Оценка: .../10
+
+Почему кликнут:
+...
+
+Хук:
+...
+
+Структура:
+1. ...
+2. ...
+3. ...
+4. ...
+5. ...
+
+Превью:
+1. "..." — .../10
+2. "..." — .../10
+3. "..." — .../10
+
+Лучшее превью:
+...
+
+Почему даст подписчиков:
+...
 """
-    answer = ask_ai_strong(prompt, max_chars=3200)
+    answer = ask_ai_strong(prompt, max_chars=2300)
     remember_generated_content(
         kind="video_idea",
         title=extract_first_title(answer),
@@ -1230,20 +1273,34 @@ async def shortidea(update: Update, context: ContextTypes.DEFAULT_TYPE):
 RU/CIS YouTube:
 {json.dumps(ru, ensure_ascii=False, indent=2)}
 
+Ответ должен уместиться в одно Telegram-сообщение.
 Нужно выдать только ОДИН лучший Shorts.
-Формат:
-1. Тема
-2. Оценка /10
-3. Первая фраза
-4. Текст Shorts на 35-50 секунд
-5. Превью:
-   - строгий концепт
-   - текст 2-5 слов
-   - оценка /10
-6. Почему это может привести подписчиков
-7. Чего не говорить
+
+Формат строго:
+
+⚡ Shorts
+
+Тема:
+...
+
+Оценка: .../10
+
+Первая фраза:
+...
+
+Текст 35-50 сек:
+...
+
+Превью:
+"..." — .../10
+
+Почему сработает:
+...
+
+Не говорить:
+...
 """
-    answer = ask_ai_strong(prompt, max_chars=2600)
+    answer = ask_ai_strong(prompt, max_chars=1900)
     remember_generated_content(
         kind="shorts_idea",
         title=extract_first_title(answer),
@@ -1360,6 +1417,135 @@ Thumbnail URL:
 7. Как сохранить интригу без грязного хайпа
 """
     await reply_long(update, ask_ai(prompt))
+
+def get_ru_competitor_watchlist():
+    memory = load_memory()
+    names = []
+
+    for item in memory.get("ru_cis_sentiment_watchlist", []):
+        if isinstance(item, dict):
+            name = item.get("name", "")
+        else:
+            name = str(item)
+        if name and name not in names:
+            names.append(name)
+
+    # Add legacy bloggers if present, but avoid pure media duplication
+    for name in memory.get("ru_cis_bloggers", []):
+        if name and name not in names:
+            names.append(name)
+
+    return names[:35]
+
+
+def collect_ru_competitor_topics(max_channels=25, per_channel=2):
+    channels = get_ru_competitor_watchlist()[:max_channels]
+    collected = []
+
+    for name in channels:
+        try:
+            query = f'{name} биткоин крипта рынок BTC'
+            results = youtube_search(query, max_results=per_channel)
+            for r in results:
+                collected.append({
+                    "source": name,
+                    "title": r.get("title", ""),
+                    "channel": r.get("channel", ""),
+                    "publishedAt": r.get("publishedAt", ""),
+                    "videoId": r.get("videoId", "")
+                })
+        except Exception:
+            continue
+
+    return collected[:70]
+
+
+def build_ahead_of_competitors_report():
+    memory_context = get_memory_policy_context()
+    competitor_topics = collect_ru_competitor_topics(max_channels=25, per_channel=2)
+    news = get_rss_news()[:15]
+    west = youtube_search("bitcoin crypto market macro ETF liquidity", max_results=8)
+
+    prompt = f"""
+Ты — стратег YouTube-канала HiFi Trade.
+Задача: смотреть темы RU/CIS crypto-блогеров и предложить тему, которая может быть сильнее их тем.
+
+Важно:
+- Не копируй конкурентов.
+- Нужно быть на шаг впереди.
+- Смотри, что они обсуждают, и найди более сильный угол.
+- Тема должна быть понятная, серьёзная, без скама, мемкоинов и low-cap мусора.
+- Выдавай только варианты 8/10+.
+- Если все темы слабые — честно скажи, что лучше подождать.
+
+Политика памяти:
+{json.dumps(memory_context, ensure_ascii=False, indent=2)}
+
+Темы RU/CIS конкурентов:
+{json.dumps(competitor_topics, ensure_ascii=False, indent=2)}
+
+Новости и рынок:
+{json.dumps(news, ensure_ascii=False, indent=2)}
+
+WEST инфополе:
+{json.dumps(west, ensure_ascii=False, indent=2)}
+
+Ответ должен уместиться в одно Telegram-сообщение.
+Без длинных объяснений.
+
+Формат строго:
+
+🧠 На шаг впереди конкурентов
+
+Конкуренты сейчас:
+1. ...
+2. ...
+3. ...
+
+Слабое место:
+...
+
+Лучшая тема:
+...
+
+Оценка: .../10
+
+Название:
+...
+
+Хук:
+...
+
+Структура:
+1. ...
+2. ...
+3. ...
+4. ...
+5. ...
+
+Превью:
+1. "..." — .../10
+2. "..." — .../10
+3. "..." — .../10
+
+Как отличиться:
+...
+"""
+
+    answer = ask_ai_strong(prompt, max_chars=2400)
+    remember_generated_content(
+        kind="ahead_of_competitors",
+        title=extract_first_title(answer),
+        summary=answer,
+        source="ru_competitor_monitor"
+    )
+    return answer
+
+
+async def ahead(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    answer = build_ahead_of_competitors_report()
+    await reply_long(update, "🧠 На шаг впереди RU/CIS конкурентов\n\n" + answer)
+
 
 async def monitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     queries = [
@@ -1680,8 +1866,8 @@ WEST:
 {json.dumps(west, ensure_ascii=False, indent=2)}
 
 Дай:
-1. 5-7 самых популярных и обсуждаемых новостей из крипты и инвестиций.
-2. Для каждой новости строго 4 строки:
+1. 5 самых популярных и обсуждаемых новостей из крипты и инвестиций.
+2. Для каждой новости строго 3-4 строки:
    - Заголовок
    - Источник
    - Суть: 1 предложение
@@ -1751,7 +1937,7 @@ WEST:
 8. Текст на превью
 9. Почему это может привести подписчиков
 """
-                        answer = ask_ai_strong(prompt, max_chars=3200)
+                        answer = ask_ai_strong(prompt, max_chars=2300)
                         remember_generated_content(
                             kind="video_idea",
                             title=extract_first_title(answer),
@@ -1759,6 +1945,14 @@ WEST:
                             source="auto_friday_videoidea"
                         )
                         text = "🎬 Идея большого ролика на вторник\n\n" + answer
+                        await send_long(app, chat_id, text)
+                        sent_keys.add(key)
+
+                if weekday in ahead_days and current_time == ahead_time:
+                    key = f"{date_key}-ahead-competitors"
+                    if key not in sent_keys:
+                        answer = build_ahead_of_competitors_report()
+                        text = "🧠 На шаг впереди RU/CIS конкурентов\n\n" + answer
                         await send_long(app, chat_id, text)
                         sent_keys.add(key)
 
@@ -1785,7 +1979,7 @@ RU/CIS:
 5. Текст на превью
 6. Почему это может привести подписчиков
 """
-                        answer = ask_ai_strong(prompt, max_chars=2600)
+                        answer = ask_ai_strong(prompt, max_chars=1900)
                         remember_generated_content(
                             kind="shorts_idea",
                             title=extract_first_title(answer),
@@ -1823,6 +2017,7 @@ def main():
     app.add_handler(CommandHandler("review", review))
     app.add_handler(CommandHandler("thumbnail", thumbnail))
     app.add_handler(CommandHandler("monitor", monitor))
+    app.add_handler(CommandHandler("ahead", ahead))
     app.add_handler(CommandHandler("competitors", competitors))
     app.add_handler(CommandHandler("trendru", trendru))
     app.add_handler(CommandHandler("trendwest", trendwest))
