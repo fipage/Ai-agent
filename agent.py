@@ -9,9 +9,29 @@ from openai import OpenAI
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").replace("\\n", "").replace("\n", "").replace("\r", "").strip()
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").replace("\\n", "").replace("\n", "").replace("\r", "").strip()
-YOUTUBE_API_KEY = os.g etenv("YOUTUBE_API_KEY", "").replace("\\n", "").replace("\n", "").replace("\r", "").strip()
+OPENAI_API_KEY = (
+    os.getenv("OPENAI_API_KEY", "")
+    .replace("\\n", "")
+    .replace("\n", "")
+    .replace("\r", "")
+    .strip()
+)
+
+TELEGRAM_BOT_TOKEN = (
+    os.getenv("TELEGRAM_BOT_TOKEN", "")
+    .replace("\\n", "")
+    .replace("\n", "")
+    .replace("\r", "")
+    .strip()
+)
+
+YOUTUBE_API_KEY = (
+    os.getenv("YOUTUBE_API_KEY", "")
+    .replace("\\n", "")
+    .replace("\n", "")
+    .replace("\r", "")
+    .strip()
+)
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -552,28 +572,197 @@ def youtube_search(query, max_results=7):
         })
     return results
 
+def clean_text_for_dedupe(value):
+    if not value:
+        return ""
+
+    value = value.lower()
+    for ch in [":", ";", ",", ".", "!", "?", "—", "-", "–", "|", "«", "»", "\"", "'", "(", ")", "[", "]"]:
+        value = value.replace(ch, " ")
+
+    words = [w.strip() for w in value.split() if len(w.strip()) > 2]
+    stop = {
+        "the", "and", "for", "with", "from", "that", "this", "are", "was",
+        "как", "что", "для", "или", "это", "при", "про", "после", "будет",
+        "bitcoin", "биткоин", "crypto", "крипто", "рынок"
+    }
+    words = [w for w in words if w not in stop]
+    return " ".join(words[:14])
+
+
+def is_trash_news(title):
+    if not title:
+        return True
+
+    lower = title.lower()
+
+    trash_words = [
+        "100x", "100х", "100 иксов", "иксы", "x100",
+        "airdrop", "эйрдроп", "giveaway", "розыгрыш",
+        "presale", "pre-sale", "предпродажа",
+        "meme coin", "memecoin", "мемкоин", "мем coin",
+        "shiba", "doge", "pepe", "floki", "bonk",
+        "low-cap", "hidden gem", "gem coin",
+        "срочно покупай", "to the moon", "moonshot",
+        "best coin to buy now", "купить сейчас"
+    ]
+
+    return any(word in lower for word in trash_words)
+
+
+def source_weight(source_name, link):
+    source_text = f"{source_name} {link}".lower()
+
+    weights = [
+        ("reuters", 10),
+        ("bloomberg", 10),
+        ("cnbc", 8),
+        ("yahoo", 7),
+        ("investing", 7),
+        ("coindesk", 9),
+        ("theblock", 9),
+        ("the block", 9),
+        ("blockworks", 8),
+        ("cointelegraph", 7),
+        ("decrypt", 7),
+        ("cryptoslate", 7),
+        ("bitcoinmagazine", 7),
+        ("forklog", 8),
+        ("rbc", 8),
+        ("рбк", 8),
+        ("bits.media", 7),
+        ("bcs", 7),
+        ("smart-lab", 6),
+        ("смартлаб", 6),
+        ("google news", 5),
+    ]
+
+    for key, weight in weights:
+        if key in source_text:
+            return weight
+
+    return 5
+
+
+def news_topic_score(title, summary="", source_name="", link=""):
+    text = f"{title} {summary}".lower()
+    score = source_weight(source_name, link)
+
+    important_terms = {
+        "bitcoin": 4, "btc": 4, "биткоин": 4,
+        "ethereum": 3, "eth": 3, "эфир": 3,
+        "etf": 4, "spot etf": 4,
+        "fed": 4, "federal reserve": 4, "фрс": 4,
+        "inflation": 3, "инфляция": 3,
+        "rates": 3, "ставк": 3,
+        "liquidity": 4, "ликвид": 4,
+        "dxy": 3, "treasury": 3, "bond": 3, "облигац": 3,
+        "sec": 3, "regulation": 3, "регуляц": 3,
+        "stablecoin": 3, "стейбл": 3,
+        "blackrock": 3, "fidelity": 3,
+        "microstrategy": 2, "saylor": 2,
+        "binance": 2, "coinbase": 2,
+        "nasdaq": 2, "s&p": 2, "sp500": 2,
+        "gold": 2, "золото": 2,
+        "oil": 1, "нефть": 1,
+    }
+
+    for term, points in important_terms.items():
+        if term in text:
+            score += points
+
+    if is_trash_news(title):
+        score -= 30
+
+    return score
+
+
 def get_rss_news():
     feeds = [
-        "https://news.google.com/rss/search?q=bitcoin+crypto+market+investing&hl=ru&gl=RU&ceid=RU:ru",
-        "https://news.google.com/rss/search?q=биткоин+криптовалюта+инвестиции+рынок&hl=ru&gl=RU&ceid=RU:ru",
+        # Global crypto / digital assets
         "https://www.coindesk.com/arc/outboundfeeds/rss/",
-        "https://cointelegraph.com/rss"
+        "https://cointelegraph.com/rss",
+        "https://decrypt.co/feed",
+        "https://cryptoslate.com/feed/",
+        "https://bitcoinmagazine.com/.rss/full/",
+        "https://blockworks.co/feed",
+        "https://www.theblock.co/rss.xml",
+
+        # Markets / macro / investing
+        "https://www.investing.com/rss/news_301.rss",
+        "https://www.investing.com/rss/news_25.rss",
+        "https://finance.yahoo.com/news/rssindex",
+        "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+
+        # RU/CIS crypto and finance
+        "https://forklog.com/feed",
+        "https://bits.media/rss2/",
+        "https://www.rbc.ru/crypto/rss.xml",
+        "https://smart-lab.ru/blog/rss/",
+        "https://bcs-express.ru/category/kriptovaluty/rss",
+
+        # Google News backups
+        "https://news.google.com/rss/search?q=bitcoin+ETF+flows+crypto+market&hl=ru&gl=RU&ceid=RU:ru",
+        "https://news.google.com/rss/search?q=bitcoin+ethereum+crypto+regulation+macro&hl=ru&gl=RU&ceid=RU:ru",
+        "https://news.google.com/rss/search?q=Federal+Reserve+liquidity+bitcoin+market&hl=ru&gl=RU&ceid=RU:ru",
+        "https://news.google.com/rss/search?q=биткоин+ETF+крипторынок&hl=ru&gl=RU&ceid=RU:ru",
+        "https://news.google.com/rss/search?q=криптовалюта+рынок+регулирование+ФРС&hl=ru&gl=RU&ceid=RU:ru",
+        "https://news.google.com/rss/search?q=биткоин+ликвидность+рынок+сегодня&hl=ru&gl=RU&ceid=RU:ru"
     ]
 
     news = []
+
     for feed_url in feeds:
         try:
             feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:8]:
+            source_name = getattr(feed.feed, "title", "") or feed_url
+
+            for entry in feed.entries[:10]:
+                title = entry.get("title", "")
+                link = entry.get("link", "")
+                summary = entry.get("summary", "")[:400]
+                published = entry.get("published", "")
+
+                if is_trash_news(title):
+                    continue
+
+                score = news_topic_score(title, summary, source_name, link)
+
                 news.append({
-                    "title": entry.get("title", ""),
-                    "link": entry.get("link", ""),
-                    "published": entry.get("published", "")
+                    "title": title,
+                    "link": link,
+                    "published": published,
+                    "source": source_name,
+                    "summary": summary,
+                    "score": score
                 })
         except Exception:
             continue
 
-    return news[:25]
+    # Deduplicate similar headlines and keep strongest
+    deduped = []
+    seen_keys = set()
+
+    for item in sorted(news, key=lambda x: x.get("score", 0), reverse=True):
+        key = clean_text_for_dedupe(item.get("title", ""))
+        if not key:
+            continue
+
+        key_short = " ".join(key.split()[:8])
+        if key_short in seen_keys:
+            continue
+
+        seen_keys.add(key_short)
+        deduped.append(item)
+
+    # Return strong candidates only. OpenAI will select final 5-7.
+    strong = [x for x in deduped if x.get("score", 0) >= 7]
+
+    if len(strong) < 10:
+        strong = deduped
+
+    return strong[:35]
+
 
 def ask_ai(prompt, max_chars=3500):
     memory = load_memory()
@@ -672,6 +861,7 @@ async def morning_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     prompt = f"""
 Сделай утренний новостной отчёт HiFi Trade.
+Используй только самые важные новости из списка. Не пересказывай всё подряд.
 
 Данные новостей:
 {json.dumps(news, ensure_ascii=False, indent=2)}
@@ -686,6 +876,7 @@ WEST YouTube:
 1. 5-7 самых популярных и обсуждаемых новостей из крипты и инвестиций.
 2. Для каждой новости строго 4 строки:
    - Заголовок
+   - Источник
    - Суть: 1 предложение
    - Почему важно: 1 предложение
    - Влияние: BTC / ETH / альты / фондовый рынок / макро / регуляции + High/Medium/Low
@@ -1477,6 +1668,7 @@ async def scheduled_loop(app):
 
                         prompt = f"""
 Автоматический утренний новостной отчёт HiFi Trade.
+Используй только самые важные новости из списка. Не пересказывай всё подряд.
 
 Новости:
 {json.dumps(news, ensure_ascii=False, indent=2)}
@@ -1491,6 +1683,7 @@ WEST:
 1. 5-7 самых популярных и обсуждаемых новостей из крипты и инвестиций.
 2. Для каждой новости строго 4 строки:
    - Заголовок
+   - Источник
    - Суть: 1 предложение
    - Почему важно: 1 предложение
    - Влияние: BTC / ETH / альты / фондовый рынок / макро / регуляции + High/Medium/Low
