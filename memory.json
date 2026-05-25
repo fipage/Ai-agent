@@ -42,97 +42,81 @@
   "ru_cis_sentiment_watchlist": [
     {
       "name": "InvTrading",
-      "last_known_mood": "bearish"
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
     },
     {
       "name": "MrMozart",
-      "last_known_mood": "bearish"
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
     },
     {
       "name": "PifagorTrade",
-      "last_known_mood": "bearish"
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
     },
     {
       "name": "Рафаэль Слезы Сатоши",
-      "last_known_mood": "bearish"
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
     },
     {
       "name": "Юра Франциско",
-      "last_known_mood": "bearish"
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
     },
     {
       "name": "IKIGAI",
-      "last_known_mood": "bearish"
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
     },
     {
       "name": "Биткоин Адепт",
-      "last_known_mood": "bearish"
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
     },
     {
       "name": "Разумный Инвестор",
-      "last_known_mood": "bearish"
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
     },
     {
       "name": "Cryptus",
-      "last_known_mood": "bearish"
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
     },
     {
       "name": "Богдан Где Иксы",
-      "last_known_mood": "bearish"
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
     },
     {
       "name": "Факич",
-      "last_known_mood": "bearish"
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
     },
     {
       "name": "Ридван",
-      "last_known_mood": "neutral"
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
     },
     {
       "name": "HAMAHA",
-      "last_known_mood": "bearish"
-    }
-  ],
-  "west_sentiment_watchlist": [
-    {
-      "name": "Benjamin Cowen",
-      "last_known_mood": "neutral"
-    },
-    {
-      "name": "InvestAnswers",
-      "last_known_mood": "neutral"
-    },
-    {
-      "name": "DataDash",
-      "last_known_mood": "neutral"
-    },
-    {
-      "name": "Into The Cryptoverse",
-      "last_known_mood": "neutral"
-    },
-    {
-      "name": "Crypto Banter",
-      "last_known_mood": "neutral"
-    },
-    {
-      "name": "Altcoin Daily",
-      "last_known_mood": "neutral"
-    },
-    {
-      "name": "The Modern Investor",
-      "last_known_mood": "neutral"
-    },
-    {
-      "name": "Anthony Pompliano",
-      "last_known_mood": "neutral"
-    },
-    {
-      "name": "Michael Saylor",
-      "last_known_mood": "bullish"
-    },
-    {
-      "name": "Raoul Pal",
-      "last_known_mood": "neutral"
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
     }
   ],
   "ru_cis_monitoring_sources": [
@@ -152,6 +136,88 @@
     "InvestFuture",
     "Смартлаб",
     "Тимофей Мартынов"
+  ],
+  "west_sentiment_watchlist": [
+    {
+      "name": "Benjamin Cowen",
+      "last_known_mood": "unknown",
+      "category": "macro crypto cycles / BTC dominance",
+      "notes": "track for cautious or risk-off/risk-on tone",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "InvestAnswers",
+      "last_known_mood": "unknown",
+      "category": "BTC / macro / portfolio analysis",
+      "notes": "track BTC, macro and asset allocation tone",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "DataDash",
+      "last_known_mood": "unknown",
+      "category": "crypto markets / macro",
+      "notes": "track risk-on/risk-off analysis",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "Into The Cryptoverse",
+      "last_known_mood": "unknown",
+      "category": "crypto cycles / BTC dominance",
+      "notes": "same ecosystem as Benjamin Cowen",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "Crypto Banter",
+      "last_known_mood": "unknown",
+      "category": "crypto market show",
+      "notes": "track retail sentiment, filter hype",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "Altcoin Daily",
+      "last_known_mood": "unknown",
+      "category": "crypto news / market sentiment",
+      "notes": "track retail crypto sentiment",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "The Modern Investor",
+      "last_known_mood": "unknown",
+      "category": "crypto news",
+      "notes": "track broad crypto news sentiment",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "Anthony Pompliano",
+      "last_known_mood": "unknown",
+      "category": "Bitcoin / macro / investing",
+      "notes": "track Bitcoin institutional narrative",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "Michael Saylor",
+      "last_known_mood": "unknown",
+      "category": "Bitcoin institutional bull",
+      "notes": "use as structural BTC bullish baseline, not short-term trading signal",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "Raoul Pal",
+      "last_known_mood": "unknown",
+      "category": "macro / liquidity / crypto cycles",
+      "notes": "track global liquidity and cycle framing",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    }
   ],
   "west_monitoring_sources": [
     "Coin Bureau",
@@ -229,7 +295,17 @@
     "Do not repeat the same idea within 14 days.",
     "After 14 days, a topic can return only with a clear new angle or new news hook.",
     "After 30 days, evergreen topics such as BTC, ETF flows, liquidity, Fed, ETH, Bitcoin dominance and macro can return with updated framing.",
-    "If a topic is still highly demanded, do not discard it forever; reframe it."
+    "If a topic is still highly demanded, do not discard it forever; reframe it.",
+    "Smart monitoring should not spam.",
+    "Smart monitoring uses cheap checks first and OpenAI only for strong new events.",
+    "Send alert only if topic is 8/10+ and useful for Telegram/Shorts/YouTube.",
+    "Do not send repeated alerts for the same topic.",
+    "Do not treat last_known_mood as current truth.",
+    "last_known_mood is only an old baseline note.",
+    "For blogger mood reports, determine actual mood from fresh content and recent titles.",
+    "If fresh content is insufficient, mark the source as 🟡 unknown/neutral.",
+    "Never claim a blogger is currently bullish or bearish based only on old memory.",
+    "Mood report should be honest: fresh signal first, memory only as context."
   ],
   "report_timezone": "Europe/Moscow",
   "daily_news_time": "09:00",
@@ -249,5 +325,20 @@
     "hot_cooldown_days": 14,
     "warm_cooldown_days": 30,
     "rule": "Recent ideas are paused, not banned forever. Evergreen topics may return with a new angle."
+  },
+  "smart_monitor_enabled": true,
+  "smart_monitor_interval_minutes": 30,
+  "smart_monitor_min_score": 7,
+  "smart_monitor_rule": "Cheap check every 30 minutes; OpenAI only if new strong event appears.",
+  "ahead_competitors_days": [
+    "Wednesday"
+  ],
+  "ahead_competitors_time": "12:00",
+  "sent_keys": [],
+  "sentiment_policy": {
+    "last_known_mood_meaning": "old baseline only, not current fact",
+    "current_mood_rule": "must be inferred from fresh content, recent titles or current monitoring",
+    "fallback": "if not enough fresh evidence, mark as unknown/neutral",
+    "telegram_display": "show colored circle + channel name only; use 🟡 when current mood is unclear"
   }
 }
