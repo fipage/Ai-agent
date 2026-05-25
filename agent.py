@@ -3,6 +3,7 @@ import json
 import asyncio
 import requests
 import feedparser
+import concurrent.futures
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from openai import OpenAI
@@ -32,6 +33,18 @@ YOUTUBE_API_KEY = (
     .replace("\r", "")
     .strip()
 )
+
+
+ALLOWED_USER_IDS_RAW = os.getenv("ALLOWED_USER_IDS", "").strip()
+ALLOWED_USER_IDS = set()
+
+if ALLOWED_USER_IDS_RAW:
+    for item in ALLOWED_USER_IDS_RAW.split(","):
+        item = item.strip()
+        if item.isdigit():
+            ALLOWED_USER_IDS.add(int(item))
+
+conversation_history = {}
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -407,15 +420,20 @@ def ask_ai_strong(prompt, max_chars=2400):
 def build_weekly_content_plan():
     memory_context = get_recent_memory_context(limit=30)
 
-    news = fetch_rss_news()[:15]
+    fear_greed = get_fear_greed_index()
+    news = get_rss_news()[:15]
     ru = youtube_search("биткоин крипта рынок BTC", max_results=8)
     west = youtube_search("bitcoin crypto market macro", max_results=8)
+    competitor_topics = collect_ru_competitor_topics(max_channels=20, per_channel=2)
 
     prompt = f"""
 Составь автоматический недельный контент-план для YouTube-канала HiFi Trade.
 
 Контекст памяти агента, чтобы НЕ повторяться:
 {json.dumps(memory_context, ensure_ascii=False, indent=2)}
+
+Fear & Greed:
+{fear_greed}
 
 Новости:
 {json.dumps(news, ensure_ascii=False, indent=2)}
@@ -490,6 +508,28 @@ RU/CIS конкуренты:
 def get_timezone():
     memory = load_memory()
     return ZoneInfo(memory.get("report_timezone", "Europe/Moscow"))
+
+def is_user_allowed(update):
+    if not ALLOWED_USER_IDS:
+        return True
+
+    user = getattr(update, "effective_user", None)
+    if not user:
+        return False
+
+    return user.id in ALLOWED_USER_IDS
+
+
+def restricted(handler):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not is_user_allowed(update):
+            if update and update.message:
+                await update.message.reply_text("Доступ закрыт.")
+            return
+        return await handler(update, context)
+
+    return wrapper
+
 
 def extract_video_id(url):
     if "youtu.be/" in url:
@@ -784,15 +824,63 @@ def get_rss_news():
     return strong[:35]
 
 
-def ask_ai(prompt, max_chars=3500):
+def get_compact_memory():
     memory = load_memory()
+    excluded_keys = {
+        "ru_cis_bloggers",
+        "west_bloggers",
+        "ru_cis_monitoring_sources",
+        "west_monitoring_sources",
+        "ru_cis_sentiment_watchlist",
+        "west_sentiment_watchlist",
+        "sent_keys",
+        "runtime_state"
+    }
+
+    compact = {}
+
+    for key, value in memory.items():
+        if key in excluded_keys:
+            continue
+        compact[key] = value
+
+    return compact
+
+
+def get_compact_success():
     success = load_success()
+
+    return {
+        "successful_videos": success.get("successful_videos", [])[-5:],
+        "used_ideas": success.get("used_ideas", [])[-15:],
+        "weekly_notes": success.get("weekly_notes", [])[-5:]
+    }
+
+
+def get_fear_greed_index():
+    try:
+        r = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10)
+        data = r.json()
+        item = data.get("data", [{}])[0]
+        value = item.get("value", "")
+        classification = item.get("value_classification", "")
+        if value and classification:
+            return f"Fear & Greed: {value} ({classification})"
+    except Exception:
+        pass
+
+    return "Fear & Greed: unavailable"
+
+
+def ask_ai(prompt, max_chars=3500):
+    memory = get_compact_memory()
+    success = get_compact_success()
 
     compact_prompt = f"""
 Память канала:
 {json.dumps(memory, ensure_ascii=False, indent=2)}
 
-Память успешных роликов и использованных идей:
+Краткая память успешных роликов и использованных идей:
 {json.dumps(success, ensure_ascii=False, indent=2)}
 
 Система оценки качества:
@@ -866,6 +954,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/scoreidea идея — оценить идею /10\n"
         "/scoretitle название — оценить заголовок /10\n"
         "/weekly_plan — проверить авто-контент-план\n"
+        "/smart_monitor_now — проверить smart monitoring\n"
         "/memory_status — посмотреть, что агент запомнил"
     )
 
@@ -876,6 +965,7 @@ async def setchat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Чат сохранён ✅ Теперь я смогу присылать отчёты автоматически.")
 
 async def morning_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    fear_greed = get_fear_greed_index()
     news = get_rss_news()
     ru_youtube = youtube_search("криптовалюта биткоин рынок сегодня", max_results=8)
     west_youtube = youtube_search("bitcoin crypto market today macro", max_results=8)
@@ -883,6 +973,9 @@ async def morning_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = f"""
 Сделай утренний новостной отчёт HiFi Trade.
 Используй только самые важные новости из списка. Не пересказывай всё подряд.
+
+Fear & Greed:
+{fear_greed}
 
 Данные новостей:
 {json.dumps(news, ensure_ascii=False, indent=2)}
@@ -973,32 +1066,42 @@ def collect_btc_sentiment_influencers():
 
 
 def collect_recent_context_for_sources(rows, max_total_items=60):
-    items = []
+    limited_rows = rows[:30]
 
-    for row in rows:
-        if len(items) >= max_total_items:
-            break
-
-        name = row["name"]
-        market = row["market"]
-
-        if market == "RU/CIS":
-            query = f'{name} биткоин крипта рынок прогноз'
-        else:
-            query = f'{name} bitcoin crypto market outlook'
-
+    def fetch_one(row):
         try:
+            name = row["name"]
+            market = row["market"]
+
+            if market == "RU/CIS":
+                query = f'{name} биткоин крипта рынок прогноз'
+            else:
+                query = f'{name} bitcoin crypto market outlook'
+
             results = youtube_search(query, max_results=2)
+            output = []
+
             for r in results:
-                items.append({
+                output.append({
                     "source": name,
                     "market": market,
                     "title": r.get("title", ""),
                     "channel": r.get("channel", ""),
                     "publishedAt": r.get("publishedAt", "")
                 })
+
+            return output
         except Exception:
-            continue
+            return []
+
+    items = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(fetch_one, row) for row in limited_rows]
+        for future in concurrent.futures.as_completed(futures):
+            items.extend(future.result())
+            if len(items) >= max_total_items:
+                break
 
     return items[:max_total_items]
 
@@ -1393,19 +1496,72 @@ async def thumbnail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thumbs = snippet.get("thumbnails", {})
     thumb_url = thumbs.get("maxres", thumbs.get("high", thumbs.get("default", {}))).get("url", "")
 
+    title = snippet.get("title", "")
+    description = snippet.get("description", "")[:1200]
+
+    if thumb_url:
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                max_tokens=900,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": thumb_url}
+                            },
+                            {
+                                "type": "text",
+                                "text": f"""
+Проанализируй превью YouTube-ролика HiFi Trade глазами YouTube thumbnail strategist.
+
+Название:
+{title}
+
+Описание:
+{description}
+
+Дай кратко:
+1. Оценка превью /10
+2. Понятно ли зрителю, о чём ролик
+3. CTR potential /10
+4. Что слабое
+5. 3 улучшенных варианта:
+   - концепт
+   - текст 2-5 слов
+   - оценка /10
+6. Лучший вариант
+
+Стиль: строго, чисто, без грязи и дешёвого хайпа.
+"""
+                            }
+                        ]
+                    }
+                ]
+            )
+
+            answer = response.choices[0].message.content or "Не удалось проанализировать превью."
+            await reply_long(update, answer[:2500])
+            return
+
+        except Exception:
+            pass
+
     prompt = f"""
 Проанализируй thumbnail strategy ролика.
 
 Название:
-{snippet.get("title", "")}
+{title}
 
 Thumbnail URL:
 {thumb_url}
 
 Описание:
-{snippet.get("description", "")[:1200]}
+{description}
 
-Важно: ты не видишь картинку глазами, но анализируешь по названию, теме и ссылке на thumbnail.
+Картинку получить не удалось, анализируй по названию и теме.
 
 Дай:
 1. Вероятная кликабельность
@@ -1418,6 +1574,8 @@ Thumbnail URL:
 """
     await reply_long(update, ask_ai(prompt))
 
+
+
 def get_ru_competitor_watchlist():
     memory = load_memory()
     names = []
@@ -1427,11 +1585,15 @@ def get_ru_competitor_watchlist():
             name = item.get("name", "")
         else:
             name = str(item)
+
         if name and name not in names:
             names.append(name)
 
-    # Add legacy bloggers if present, but avoid pure media duplication
     for name in memory.get("ru_cis_bloggers", []):
+        if name and name not in names:
+            names.append(name)
+
+    for name in memory.get("ru_cis_monitoring_sources", []):
         if name and name not in names:
             names.append(name)
 
@@ -1440,29 +1602,39 @@ def get_ru_competitor_watchlist():
 
 def collect_ru_competitor_topics(max_channels=25, per_channel=2):
     channels = get_ru_competitor_watchlist()[:max_channels]
-    collected = []
 
-    for name in channels:
+    def fetch_one(name):
         try:
             query = f'{name} биткоин крипта рынок BTC'
             results = youtube_search(query, max_results=per_channel)
+            output = []
+
             for r in results:
-                collected.append({
+                output.append({
                     "source": name,
                     "title": r.get("title", ""),
                     "channel": r.get("channel", ""),
                     "publishedAt": r.get("publishedAt", ""),
                     "videoId": r.get("videoId", "")
                 })
+
+            return output
         except Exception:
-            continue
+            return []
+
+    collected = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(fetch_one, name) for name in channels]
+        for future in concurrent.futures.as_completed(futures):
+            collected.extend(future.result())
 
     return collected[:70]
 
 
 def build_ahead_of_competitors_report():
     memory_context = get_memory_policy_context()
-    competitor_topics = collect_ru_competitor_topics(max_channels=25, per_channel=2)
+    competitor_topics = collect_ru_competitor_topics(max_channels=20, per_channel=2)
     news = get_rss_news()[:15]
     west = youtube_search("bitcoin crypto market macro ETF liquidity", max_results=8)
 
@@ -1476,7 +1648,7 @@ def build_ahead_of_competitors_report():
 - Смотри, что они обсуждают, и найди более сильный угол.
 - Тема должна быть понятная, серьёзная, без скама, мемкоинов и low-cap мусора.
 - Выдавай только варианты 8/10+.
-- Если все темы слабые — честно скажи, что лучше подождать.
+- Ответ должен уместиться в одно Telegram-сообщение.
 
 Политика памяти:
 {json.dumps(memory_context, ensure_ascii=False, indent=2)}
@@ -1489,9 +1661,6 @@ def build_ahead_of_competitors_report():
 
 WEST инфополе:
 {json.dumps(west, ensure_ascii=False, indent=2)}
-
-Ответ должен уместиться в одно Telegram-сообщение.
-Без длинных объяснений.
 
 Формат строго:
 
@@ -1516,13 +1685,6 @@ WEST инфополе:
 Хук:
 ...
 
-Структура:
-1. ...
-2. ...
-3. ...
-4. ...
-5. ...
-
 Превью:
 1. "..." — .../10
 2. "..." — .../10
@@ -1532,7 +1694,7 @@ WEST инфополе:
 ...
 """
 
-    answer = ask_ai_strong(prompt, max_chars=2400)
+    answer = ask_ai_strong(prompt, max_chars=2300)
     remember_generated_content(
         kind="ahead_of_competitors",
         title=extract_first_title(answer),
@@ -1820,10 +1982,360 @@ async def cheap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_long(update, ask_ai("Ответь максимально кратко: " + query, max_chars=1200))
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await reply_long(update, ask_ai(update.message.text, max_chars=2000))
+    chat_id = str(update.effective_chat.id)
+    user_text = update.message.text
+
+    history = conversation_history.get(chat_id, [])
+    history.append({"role": "user", "content": user_text})
+    history = history[-8:]
+
+    memory = get_compact_memory()
+    success = get_compact_success()
+
+    system_context = f"""
+Ты AI-команда продвижения HiFi Trade.
+Отвечай кратко и полезно.
+Не предлагай мемкоины, скам, low-cap мусор.
+
+Память канала:
+{json.dumps(memory, ensure_ascii=False, indent=2)}
+
+Краткая память:
+{json.dumps(success, ensure_ascii=False, indent=2)}
+"""
+
+    response = client.responses.create(
+        model=MODEL_CHEAP,
+        max_output_tokens=900,
+        input=[
+            {"role": "system", "content": system_context},
+            *history
+        ]
+    )
+
+    answer = response.output_text or "Не удалось получить ответ."
+
+    history.append({"role": "assistant", "content": answer})
+    conversation_history[chat_id] = history[-8:]
+
+    await reply_long(update, answer[:2200])
+
+
+
+def normalize_event_key(title):
+    if not title:
+        return ""
+
+    value = title.lower()
+    for ch in [":", ";", ",", ".", "!", "?", "—", "-", "–", "|", "«", "»", "\"", "'", "(", ")", "[", "]"]:
+        value = value.replace(ch, " ")
+
+    words = [w.strip() for w in value.split() if len(w.strip()) > 3]
+    stop = {
+        "bitcoin", "биткоин", "crypto", "крипто", "рынок", "market",
+        "today", "сегодня", "will", "после", "this", "that", "with",
+        "from", "что", "как", "для", "или", "цена", "price"
+    }
+    words = [w for w in words if w not in stop]
+    return " ".join(words[:10])
+
+
+def score_monitor_event(title, source=""):
+    text_value = f"{title} {source}".lower()
+    score = 0
+
+    strong_terms = {
+        "bitcoin": 3, "btc": 3, "биткоин": 3,
+        "ethereum": 2, "eth": 2, "эфир": 2,
+        "etf": 4, "flows": 3, "приток": 3, "отток": 3,
+        "fed": 4, "фрс": 4, "rate": 3, "ставк": 3,
+        "inflation": 3, "инфляц": 3,
+        "liquidity": 4, "ликвид": 4,
+        "sec": 3, "regulation": 3, "регуляц": 3,
+        "blackrock": 3, "fidelity": 3,
+        "recession": 3, "рецесс": 3,
+        "bond": 3, "treasury": 3, "облигац": 3,
+        "dxy": 3, "dollar": 2, "доллар": 2,
+        "dominance": 2, "доминац": 2,
+        "stablecoin": 2, "стейбл": 2
+    }
+
+    for term, pts in strong_terms.items():
+        if term in text_value:
+            score += pts
+
+    weak_terms = [
+        "meme", "memecoin", "мемкоин", "airdrop", "presale",
+        "100x", "100х", "shiba", "doge", "pepe", "floki",
+        "giveaway", "розыгрыш", "best coin to buy"
+    ]
+
+    if any(term in text_value for term in weak_terms):
+        score -= 20
+
+    return score
+
+
+def collect_light_monitor_events():
+    events = []
+
+    try:
+        for item in get_rss_news()[:18]:
+            title = item.get("title", "")
+            source = item.get("source", "")
+            key = normalize_event_key(title)
+            score = score_monitor_event(title, source)
+
+            if key and score >= 5:
+                events.append({
+                    "key": key,
+                    "type": "news",
+                    "title": title,
+                    "source": source,
+                    "score": score
+                })
+    except Exception:
+        pass
+
+    try:
+        competitor_topics = collect_ru_competitor_topics(max_channels=12, per_channel=1)
+        for item in competitor_topics[:20]:
+            title = item.get("title", "")
+            source = item.get("source", item.get("channel", ""))
+            key = normalize_event_key(title)
+            score = score_monitor_event(title, source) + 1
+
+            if key and score >= 5:
+                events.append({
+                    "key": key,
+                    "type": "ru_competitor",
+                    "title": title,
+                    "source": source,
+                    "score": score
+                })
+    except Exception:
+        pass
+
+    try:
+        youtube_queries = [
+            "биткоин рынок сегодня ETF ликвидность",
+            "криптовалюта рынок ФРС биткоин",
+            "bitcoin ETF flows liquidity macro",
+            "bitcoin crypto market Fed liquidity"
+        ]
+
+        for q in youtube_queries:
+            for item in youtube_search(q, max_results=3):
+                title = item.get("title", "")
+                source = item.get("channel", "")
+                key = normalize_event_key(title)
+                score = score_monitor_event(title, source)
+
+                if key and score >= 5:
+                    events.append({
+                        "key": key,
+                        "type": "youtube_trend",
+                        "title": title,
+                        "source": source,
+                        "score": score
+                    })
+    except Exception:
+        pass
+
+    seen = set()
+    unique = []
+
+    for e in sorted(events, key=lambda x: x.get("score", 0), reverse=True):
+        key = e.get("key", "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(e)
+
+    return unique[:20]
+
+
+def pick_new_strong_events(events, min_score=7, limit=5):
+    seen_keys = get_seen_event_keys()
+    picked = []
+
+    for e in events:
+        key = e.get("key", "")
+        if not key or key in seen_keys:
+            continue
+
+        if e.get("score", 0) >= min_score:
+            picked.append(e)
+
+    return picked[:limit]
+
+
+def build_smart_monitor_alert(events):
+    memory_context = get_memory_policy_context()
+
+    prompt = f"""
+Ты AI-редактор HiFi Trade.
+
+Нашлись новые сильные события/темы.
+Нужно решить, стоит ли отправлять владельцу короткий alert.
+
+Правила:
+- если темы слабые или повторяют старое — ответь только NO_ALERT
+- если есть сильная тема 8/10+ — дай короткий alert
+- ответ должен уместиться в одно Telegram-сообщение
+- без мемкоинов, скама, low-cap мусора
+- не давай торговые сигналы
+- думай как редактор канала
+
+Память и анти-повтор:
+{json.dumps(memory_context, ensure_ascii=False, indent=2)}
+
+Новые события:
+{json.dumps(events, ensure_ascii=False, indent=2)}
+
+Формат, если alert нужен:
+
+🚨 Новый сильный инфоповод
+
+Тема:
+...
+
+Почему важно:
+...
+
+Оценка: .../10
+
+Формат:
+Telegram / Shorts / Ролик / Подождать
+
+Угол подачи:
+...
+
+Заголовок:
+...
+
+Превью:
+"..."
+
+Если alert НЕ нужен, ответь только:
+NO_ALERT
+"""
+
+    return ask_ai_strong(prompt, max_chars=1800)
+
+
+async def smart_monitor_tick(app, chat_id):
+    events = collect_light_monitor_events()
+    strong_events = pick_new_strong_events(events, min_score=7, limit=5)
+
+    if not strong_events:
+        return
+
+    alert = build_smart_monitor_alert(strong_events)
+
+    if not alert or "NO_ALERT" in alert.strip()[:30]:
+        for e in strong_events:
+            save_seen_event_key(e.get("key", ""))
+        return
+
+    remember_report("smart_monitor_alert", alert)
+    remember_generated_content(
+        kind="smart_monitor_alert",
+        title=extract_first_title(alert),
+        summary=alert,
+        source="smart_monitor"
+    )
+
+    await send_long(app, chat_id, alert)
+
+    for e in strong_events:
+        save_seen_event_key(e.get("key", ""))
+
+
+async def smart_monitor_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    events = collect_light_monitor_events()
+    strong_events = pick_new_strong_events(events, min_score=7, limit=5)
+
+    if not strong_events:
+        await update.message.reply_text("Сильных новых инфоповодов пока не найдено.")
+        return
+
+    alert = build_smart_monitor_alert(strong_events)
+
+    if not alert or "NO_ALERT" in alert.strip()[:30]:
+        await update.message.reply_text("События есть, но они пока недостаточно сильные для alert.")
+        for e in strong_events:
+            save_seen_event_key(e.get("key", ""))
+        return
+
+    remember_report("manual_smart_monitor", alert)
+    await reply_long(update, alert)
+
+
+
+def load_sent_keys():
+    memory = load_memory()
+    keys = memory.get("sent_keys", [])
+    if not isinstance(keys, list):
+        keys = []
+    return set(keys[-200:])
+
+
+def mark_sent_key(sent_keys, key):
+    sent_keys.add(key)
+
+    memory = load_memory()
+    keys = memory.get("sent_keys", [])
+    if not isinstance(keys, list):
+        keys = []
+
+    if key not in keys:
+        keys.append(key)
+
+    memory["sent_keys"] = keys[-200:]
+    save_memory(memory)
+
+
+def get_runtime_state():
+    memory = load_memory()
+    state = memory.get("runtime_state", {})
+    if not isinstance(state, dict):
+        state = {}
+    return state
+
+
+def save_runtime_state(state):
+    memory = load_memory()
+    memory["runtime_state"] = state
+    save_memory(memory)
+
+
+def get_seen_event_keys():
+    state = get_runtime_state()
+    keys = state.get("seen_event_keys", [])
+    if not isinstance(keys, list):
+        keys = []
+    return set(keys[-300:])
+
+
+def save_seen_event_key(key):
+    if not key:
+        return
+
+    state = get_runtime_state()
+    keys = state.get("seen_event_keys", [])
+    if not isinstance(keys, list):
+        keys = []
+
+    if key not in keys:
+        keys.append(key)
+
+    state["seen_event_keys"] = keys[-300:]
+    save_runtime_state(state)
+
 
 async def scheduled_loop(app):
-    sent_keys = set()
+    sent_keys = load_sent_keys()
 
     while True:
         try:
@@ -1840,14 +2352,21 @@ async def scheduled_loop(app):
                 daily_time = memory.get("daily_news_time", "09:00")
                 blogger_day = memory.get("weekly_blogger_mood_day", "Sunday")
                 blogger_time = memory.get("weekly_blogger_mood_time", "10:00")
+                weekly_plan_day = memory.get("weekly_content_plan_day", "Sunday")
+                weekly_plan_time = memory.get("weekly_content_plan_time", "11:00")
                 video_day = memory.get("video_idea_day", "Friday")
                 video_time = memory.get("video_idea_time", "12:00")
                 shorts_days = memory.get("shorts_idea_days", ["Monday", "Thursday"])
                 shorts_time = memory.get("shorts_idea_time", "12:00")
+                ahead_days = memory.get("ahead_competitors_days", ["Wednesday"])
+                ahead_time = memory.get("ahead_competitors_time", "12:00")
+                smart_monitor_enabled = memory.get("smart_monitor_enabled", True)
+                smart_monitor_interval_minutes = int(memory.get("smart_monitor_interval_minutes", 30))
 
                 if current_time == daily_time:
                     key = f"{date_key}-daily"
                     if key not in sent_keys:
+                        fear_greed = get_fear_greed_index()
                         news = get_rss_news()
                         ru = youtube_search("криптовалюта биткоин рынок сегодня", max_results=6)
                         west = youtube_search("bitcoin crypto market today macro", max_results=6)
@@ -1885,7 +2404,7 @@ WEST:
                         remember_report("auto_morning_news", answer)
                         text = "🌅 Утренний новостной отчёт HiFi Trade\n\n" + answer
                         await send_long(app, chat_id, text)
-                        sent_keys.add(key)
+                        mark_sent_key(sent_keys, key)
 
                 if weekday == blogger_day and current_time == blogger_time:
                     key = f"{date_key}-bloggers"
@@ -1897,7 +2416,7 @@ WEST:
                         remember_report("auto_blogger_mood", report)
                         text = "📊 Еженедельное настроение инфополя\n\n" + report
                         await send_long(app, chat_id, text)
-                        sent_keys.add(key)
+                        mark_sent_key(sent_keys, key)
 
                 if weekday == weekly_plan_day and current_time == weekly_plan_time:
                     key = f"{date_key}-weekly-plan"
@@ -1905,7 +2424,7 @@ WEST:
                         answer = build_weekly_content_plan()
                         text = "🗓 Автоматический контент-план на неделю\n\n" + answer
                         await send_long(app, chat_id, text)
-                        sent_keys.add(key)
+                        mark_sent_key(sent_keys, key)
 
                 if weekday == video_day and current_time == video_time:
                     key = f"{date_key}-videoidea"
@@ -1946,7 +2465,7 @@ WEST:
                         )
                         text = "🎬 Идея большого ролика на вторник\n\n" + answer
                         await send_long(app, chat_id, text)
-                        sent_keys.add(key)
+                        mark_sent_key(sent_keys, key)
 
                 if weekday in ahead_days and current_time == ahead_time:
                     key = f"{date_key}-ahead-competitors"
@@ -1954,7 +2473,7 @@ WEST:
                         answer = build_ahead_of_competitors_report()
                         text = "🧠 На шаг впереди RU/CIS конкурентов\n\n" + answer
                         await send_long(app, chat_id, text)
-                        sent_keys.add(key)
+                        mark_sent_key(sent_keys, key)
 
                 if weekday in shorts_days and current_time == shorts_time:
                     key = f"{date_key}-shorts"
@@ -1988,7 +2507,15 @@ RU/CIS:
                         )
                         text = "⚡ Идея Shorts\n\n" + answer
                         await send_long(app, chat_id, text)
-                        sent_keys.add(key)
+                        mark_sent_key(sent_keys, key)
+
+            if chat_id and smart_monitor_enabled:
+                minute = int(datetime.now(get_timezone()).strftime("%M"))
+                if smart_monitor_interval_minutes > 0 and minute % smart_monitor_interval_minutes == 0:
+                    monitor_key = f"{date_key}-smart-monitor-{datetime.now(get_timezone()).strftime('%H:%M')}"
+                    if monitor_key not in sent_keys:
+                        await smart_monitor_tick(app, chat_id)
+                        mark_sent_key(sent_keys, monitor_key)
 
             await asyncio.sleep(60)
 
@@ -2007,30 +2534,31 @@ def main():
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("setchat", setchat))
-    app.add_handler(CommandHandler("morning_now", morning_now))
-    app.add_handler(CommandHandler("bloggers_now", bloggers_now))
-    app.add_handler(CommandHandler("videoidea", videoidea))
-    app.add_handler(CommandHandler("shortidea", shortidea))
-    app.add_handler(CommandHandler("channel", channel))
-    app.add_handler(CommandHandler("review", review))
-    app.add_handler(CommandHandler("thumbnail", thumbnail))
-    app.add_handler(CommandHandler("monitor", monitor))
-    app.add_handler(CommandHandler("ahead", ahead))
-    app.add_handler(CommandHandler("competitors", competitors))
-    app.add_handler(CommandHandler("trendru", trendru))
-    app.add_handler(CommandHandler("trendwest", trendwest))
-    app.add_handler(CommandHandler("opportunity", opportunity))
-    app.add_handler(CommandHandler("remember_success", remember_success))
-    app.add_handler(CommandHandler("winners", winners))
-    app.add_handler(CommandHandler("scoreidea", scoreidea))
-    app.add_handler(CommandHandler("scoretitle", scoretitle))
-    app.add_handler(CommandHandler("weekly_plan", weekly_plan))
-    app.add_handler(CommandHandler("memory_status", memory_status))
-    app.add_handler(CommandHandler("cheap", cheap))
+    app.add_handler(CommandHandler("start", restricted(start)))
+    app.add_handler(CommandHandler("setchat", restricted(setchat)))
+    app.add_handler(CommandHandler("morning_now", restricted(morning_now)))
+    app.add_handler(CommandHandler("bloggers_now", restricted(bloggers_now)))
+    app.add_handler(CommandHandler("videoidea", restricted(videoidea)))
+    app.add_handler(CommandHandler("shortidea", restricted(shortidea)))
+    app.add_handler(CommandHandler("channel", restricted(channel)))
+    app.add_handler(CommandHandler("review", restricted(review)))
+    app.add_handler(CommandHandler("thumbnail", restricted(thumbnail)))
+    app.add_handler(CommandHandler("monitor", restricted(monitor)))
+    app.add_handler(CommandHandler("ahead", restricted(ahead)))
+    app.add_handler(CommandHandler("competitors", restricted(competitors)))
+    app.add_handler(CommandHandler("trendru", restricted(trendru)))
+    app.add_handler(CommandHandler("trendwest", restricted(trendwest)))
+    app.add_handler(CommandHandler("opportunity", restricted(opportunity)))
+    app.add_handler(CommandHandler("remember_success", restricted(remember_success)))
+    app.add_handler(CommandHandler("winners", restricted(winners)))
+    app.add_handler(CommandHandler("scoreidea", restricted(scoreidea)))
+    app.add_handler(CommandHandler("scoretitle", restricted(scoretitle)))
+    app.add_handler(CommandHandler("smart_monitor_now", restricted(smart_monitor_now)))
+    app.add_handler(CommandHandler("weekly_plan", restricted(weekly_plan)))
+    app.add_handler(CommandHandler("memory_status", restricted(memory_status)))
+    app.add_handler(CommandHandler("cheap", restricted(cheap)))
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, restricted(handle_message)))
 
     print("HiFi Trade AI Growth Team Started")
     app.run_polling()
