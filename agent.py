@@ -4,6 +4,7 @@ import csv
 from io import StringIO
 import asyncio
 import requests
+import urllib.parse
 import feedparser
 import concurrent.futures
 import logging
@@ -1856,6 +1857,341 @@ async def reply_long(update, text):
         text = "Пустой ответ."
     for i in range(0, len(text), 3500):
         await update.message.reply_text(text[i:i+3500])
+
+
+
+# =========================
+# YouTube Analytics OAuth
+# =========================
+def get_youtube_oauth_access_token():
+    client_id = os.getenv("YOUTUBE_CLIENT_ID", "").strip()
+    client_secret = os.getenv("YOUTUBE_CLIENT_SECRET", "").strip()
+    refresh_token = os.getenv("YOUTUBE_REFRESH_TOKEN", "").strip()
+
+    if not client_id or not client_secret or not refresh_token:
+        return None, "В Railway не заданы YOUTUBE_CLIENT_ID / YOUTUBE_CLIENT_SECRET / YOUTUBE_REFRESH_TOKEN."
+
+    try:
+        response = requests.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+            },
+            timeout=20,
+        )
+        if response.status_code != 200:
+            return None, f"Google OAuth error {response.status_code}: {response.text[:700]}"
+        data = response.json()
+        token = data.get("access_token")
+        if not token:
+            return None, f"Google не вернул access_token: {data}"
+        return token, None
+    except Exception as e:
+        return None, f"Ошибка OAuth-запроса: {e}"
+
+
+def youtube_api_get(url, params=None, use_oauth=False):
+    params = params or {}
+    headers = {}
+
+    if use_oauth:
+        token, err = get_youtube_oauth_access_token()
+        if err:
+            return None, err
+        headers["Authorization"] = f"Bearer {token}"
+    else:
+        api_key = os.getenv("YOUTUBE_API_KEY", "").strip()
+        if api_key:
+            params["key"] = api_key
+
+    try:
+        response = requests.get(url, params=params, headers=headers, timeout=25)
+        if response.status_code != 200:
+            return None, f"YouTube API error {response.status_code}: {response.text[:700]}"
+        return response.json(), None
+    except Exception as e:
+        return None, f"Ошибка запроса YouTube API: {e}"
+
+
+def yt_analytics_query(start_date=None, end_date=None, dimensions="video", metrics=None, sort="-views", max_results=10):
+    if not end_date:
+        end_date = datetime.utcnow().date().isoformat()
+    if not start_date:
+        start_date = (datetime.utcnow().date() - timedelta(days=28)).isoformat()
+    if metrics is None:
+        metrics = "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,impressions,impressionsClickThroughRate"
+
+    params = {
+        "ids": "channel==MINE",
+        "startDate": start_date,
+        "endDate": end_date,
+        "metrics": metrics,
+        "dimensions": dimensions,
+        "sort": sort,
+        "maxResults": max_results,
+    }
+    return youtube_api_get("https://youtubeanalytics.googleapis.com/v2/reports", params=params, use_oauth=True)
+
+
+def get_my_recent_youtube_videos(max_results=10):
+    data, err = youtube_api_get(
+        "https://www.googleapis.com/youtube/v3/channels",
+        params={"part": "contentDetails", "mine": "true"},
+        use_oauth=True,
+    )
+    if err:
+        return None, err
+    items = data.get("items", [])
+    if not items:
+        return None, "YouTube не вернул канал. Проверь, что OAuth сделан на аккаунт владельца канала."
+
+    uploads_playlist = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+    playlist, err = youtube_api_get(
+        "https://www.googleapis.com/youtube/v3/playlistItems",
+        params={"part": "snippet,contentDetails", "playlistId": uploads_playlist, "maxResults": max_results},
+        use_oauth=True,
+    )
+    if err:
+        return None, err
+
+    video_ids = [item.get("contentDetails", {}).get("videoId") for item in playlist.get("items", []) if item.get("contentDetails", {}).get("videoId")]
+    if not video_ids:
+        return [], None
+
+    videos, err = youtube_api_get(
+        "https://www.googleapis.com/youtube/v3/videos",
+        params={"part": "snippet,statistics,contentDetails", "id": ",".join(video_ids)},
+        use_oauth=True,
+    )
+    if err:
+        return None, err
+    return videos.get("items", []), None
+
+
+def get_youtube_video_titles(video_ids):
+    if not video_ids:
+        return {}
+    result = {}
+    ids = list(video_ids)
+    for i in range(0, len(ids), 50):
+        chunk = ids[i:i+50]
+        videos, err = youtube_api_get(
+            "https://www.googleapis.com/youtube/v3/videos",
+            params={"part": "snippet,statistics", "id": ",".join(chunk)},
+            use_oauth=True,
+        )
+        if err:
+            continue
+        for item in videos.get("items", []):
+            vid = item.get("id")
+            result[vid] = {
+                "title": item.get("snippet", {}).get("title", ""),
+                "url": f"https://youtu.be/{vid}",
+                "views_public": item.get("statistics", {}).get("viewCount"),
+            }
+    return result
+
+
+def format_yt_seconds(seconds):
+    try:
+        seconds = int(float(seconds))
+    except Exception:
+        return str(seconds)
+    m, s = divmod(seconds, 60)
+    return f"{m}:{s:02d}"
+
+
+def yt_learn_from_analytics(days=28, max_results=15):
+    end_date = datetime.utcnow().date().isoformat()
+    start_date = (datetime.utcnow().date() - timedelta(days=days)).isoformat()
+    data, err = yt_analytics_query(start_date=start_date, end_date=end_date, dimensions="video", sort="-views", max_results=max_results)
+    if err:
+        return None, err
+    rows = data.get("rows", [])
+    headers = [h.get("name") for h in data.get("columnHeaders", [])]
+    if not rows:
+        return [], None
+
+    video_idx = headers.index("video") if "video" in headers else 0
+    video_ids = [row[video_idx] for row in rows]
+    titles = get_youtube_video_titles(video_ids)
+    saved = []
+
+    for row in rows:
+        row_data = dict(zip(headers, row))
+        vid = row_data.get("video")
+        meta = titles.get(vid, {})
+        item = remember_video_performance(
+            title=meta.get("title") or vid,
+            url=meta.get("url", f"https://youtu.be/{vid}"),
+            views=row_data.get("views", 0),
+            ctr=row_data.get("impressionsClickThroughRate"),
+            retention=row_data.get("averageViewPercentage"),
+            subscribers=row_data.get("subscribersGained", 0),
+            notes=f"Автоимпорт YouTube Analytics за {days} дней. Средний просмотр: {format_yt_seconds(row_data.get('averageViewDuration', 0))}. Показы: {row_data.get('impressions', 'n/a')}.",
+        )
+        saved.append(item)
+    return saved, None
+
+
+
+async def yt_auth_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    token, err = get_youtube_oauth_access_token()
+    if err:
+        await update.message.reply_text(f"❌ YouTube OAuth не работает:\n{err}")
+        return
+
+    data, err = youtube_api_get(
+        "https://www.googleapis.com/youtube/v3/channels",
+        params={"part": "snippet,statistics", "mine": "true"},
+        use_oauth=True,
+    )
+    if err:
+        await update.message.reply_text(f"❌ OAuth токен получен, но канал не прочитан:\n{err}")
+        return
+    items = data.get("items", [])
+    if not items:
+        await update.message.reply_text("❌ Канал не найден. Возможно OAuth сделан не на аккаунт владельца канала.")
+        return
+    channel = items[0]
+    snippet = channel.get("snippet", {})
+    stats = channel.get("statistics", {})
+    await update.message.reply_text(
+        "✅ YouTube OAuth работает.\n\n"
+        f"Канал: {snippet.get('title', 'без названия')}\n"
+        f"Подписчики: {stats.get('subscriberCount', 'скрыто')}\n"
+        f"Видео: {stats.get('videoCount', 'n/a')}\n"
+        f"Просмотры канала: {stats.get('viewCount', 'n/a')}"
+    )
+
+
+async def yt_recent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    max_results = 10
+    if context.args:
+        try:
+            max_results = min(max(int(context.args[0]), 1), 25)
+        except Exception:
+            pass
+    videos, err = get_my_recent_youtube_videos(max_results=max_results)
+    if err:
+        await update.message.reply_text(f"❌ Не смог получить ролики:\n{err}")
+        return
+    if not videos:
+        await update.message.reply_text("Ролики не найдены.")
+        return
+    lines = ["🎬 Последние ролики канала:\n"]
+    for i, item in enumerate(videos, 1):
+        title = item.get("snippet", {}).get("title", "без названия")
+        vid = item.get("id")
+        stats = item.get("statistics", {})
+        published = item.get("snippet", {}).get("publishedAt", "")[:10]
+        lines.append(f"{i}. {title}\nДата: {published}\nПросмотры: {stats.get('viewCount', 'n/a')}, лайки: {stats.get('likeCount', 'n/a')}, комменты: {stats.get('commentCount', 'n/a')}\nhttps://youtu.be/{vid}\n")
+    await reply_long(update, "\n".join(lines))
+
+
+async def yt_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    days = 28
+    if context.args:
+        try:
+            days = min(max(int(context.args[0]), 1), 365)
+        except Exception:
+            pass
+    end_date = datetime.utcnow().date().isoformat()
+    start_date = (datetime.utcnow().date() - timedelta(days=days)).isoformat()
+    data, err = yt_analytics_query(start_date=start_date, end_date=end_date, dimensions="video", sort="-views", max_results=10)
+    if err:
+        await update.message.reply_text(f"❌ Не смог получить YouTube Analytics:\n{err}")
+        return
+    rows = data.get("rows", [])
+    headers = [h.get("name") for h in data.get("columnHeaders", [])]
+    if not rows:
+        await update.message.reply_text(f"За последние {days} дней YouTube Analytics не вернул строк.")
+        return
+    video_idx = headers.index("video") if "video" in headers else 0
+    titles = get_youtube_video_titles([row[video_idx] for row in rows])
+    lines = [f"📊 YouTube Analytics за {days} дней:\n"]
+    for row in rows:
+        row_data = dict(zip(headers, row))
+        vid = row_data.get("video")
+        meta = titles.get(vid, {})
+        title = meta.get("title", vid)
+        lines.append(
+            f"🎬 {title}\n"
+            f"Просмотры: {row_data.get('views', 'n/a')}\n"
+            f"CTR показов: {row_data.get('impressionsClickThroughRate', 'n/a')}%\n"
+            f"Удержание: {row_data.get('averageViewPercentage', 'n/a')}%\n"
+            f"Средний просмотр: {format_yt_seconds(row_data.get('averageViewDuration', 0))}\n"
+            f"Подписчики: +{row_data.get('subscribersGained', 0)}\n"
+            f"{meta.get('url', '')}\n"
+        )
+    await reply_long(update, "\n".join(lines))
+
+
+async def yt_learn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    days = 28
+    if context.args:
+        try:
+            days = min(max(int(context.args[0]), 1), 365)
+        except Exception:
+            pass
+    saved, err = yt_learn_from_analytics(days=days, max_results=15)
+    if err:
+        await update.message.reply_text(f"❌ Не смог обучиться на YouTube Analytics:\n{err}")
+        return
+    if not saved:
+        await update.message.reply_text(f"За последние {days} дней нечего импортировать.")
+        return
+    await update.message.reply_text(f"✅ Импортировал в память метрики роликов: {len(saved)} шт.\nПериод: последние {days} дней.\n\nТеперь вызови /performance или /strategy10.")
+
+
+async def yt_video_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw = " ".join(context.args).strip()
+    if not raw:
+        await update.message.reply_text("Пришли ссылку или ID ролика:\n/yt_video_stats https://youtu.be/...")
+        return
+    match = re.search(r"(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{8,})", raw)
+    video_id = match.group(1) if match else raw.strip()
+    end_date = datetime.utcnow().date().isoformat()
+    start_date = (datetime.utcnow().date() - timedelta(days=365)).isoformat()
+    data, err = yt_analytics_query(start_date=start_date, end_date=end_date, dimensions="video", metrics="views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,impressions,impressionsClickThroughRate", sort="-views", max_results=200)
+    if err:
+        await update.message.reply_text(f"❌ Не смог получить аналитику:\n{err}")
+        return
+    headers = [h.get("name") for h in data.get("columnHeaders", [])]
+    found = None
+    for row in data.get("rows", []):
+        row_data = dict(zip(headers, row))
+        if row_data.get("video") == video_id:
+            found = row_data
+            break
+    titles = get_youtube_video_titles([video_id])
+    title = titles.get(video_id, {}).get("title", video_id)
+    if not found:
+        await update.message.reply_text(f"Не нашёл этот ролик в Analytics за последние 365 дней.\nНазвание: {title}\nВозможно, мало данных или другой аккаунт OAuth.")
+        return
+    prompt = f"""
+Разбери статистику ролика HiFi Trade.
+
+Название:
+{title}
+
+Данные YouTube Analytics:
+{json.dumps(found, ensure_ascii=False, indent=2)}
+
+Дай:
+1. Оценка результата /10
+2. Что хорошо
+3. Что плохо
+4. Что улучшить в следующем ролике
+5. Что можно повторить
+6. Вывод по заголовку/превью/теме
+
+Ответ на русском, без воды.
+"""
+    await reply_long(update, ask_ai(prompt, max_chars=2500))
 
 
 async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3815,6 +4151,11 @@ def main():
 
     app.add_handler(CommandHandler("start", restricted(start)))
     app.add_handler(CommandHandler("health", restricted(health)))
+    app.add_handler(CommandHandler("yt_auth_check", restricted(yt_auth_check)))
+    app.add_handler(CommandHandler("yt_recent", restricted(yt_recent)))
+    app.add_handler(CommandHandler("yt_analytics", restricted(yt_analytics)))
+    app.add_handler(CommandHandler("yt_learn", restricted(yt_learn)))
+    app.add_handler(CommandHandler("yt_video_stats", restricted(yt_video_stats)))
     app.add_handler(CommandHandler("setchat", restricted(setchat)))
     app.add_handler(CommandHandler("morning_now", restricted(morning_now)))
     app.add_handler(CommandHandler("bloggers_now", restricted(bloggers_now)))
