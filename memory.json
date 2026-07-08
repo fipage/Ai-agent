@@ -110,5 +110,250 @@
       "Bitcoin должен был упасть. Что происходит?",
       "BTC не падает — это сила или ловушка?"
     ]
-  }
+  },
+  "ru_cis_sentiment_watchlist": [
+    {
+      "name": "InvTrading",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "MrMozart",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "PifagorTrade",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "Рафаэль Слезы Сатоши",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "Юра Франциско",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "IKIGAI",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "Биткоин Адепт",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "Разумный Инвестор",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "Cryptus",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "Богдан Где Иксы",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "Факич",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "Ридван",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "HAMAHA",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "OtFront",
+      "last_known_mood": "unknown",
+      "mood_source": "added from user-provided target @OtFront; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    }
+  ],
+  "ru_cis_bloggers": [
+    "InvTrading",
+    "MrMozart",
+    "PifagorTrade",
+    "Рафаэль Слезы Сатоши",
+    "Юра Франциско",
+    "IKIGAI",
+    "Биткоин Адепт",
+    "Разумный Инвестор",
+    "Cryptus",
+    "Богдан Где Иксы",
+    "Факич",
+    "Ридван",
+    "HAMAHA",
+    "Крипто Патруль",
+    "РБК Крипто",
+    "ForkLog",
+    "Bits.media",
+    "Crypto Family",
+    "Pro Blockchain",
+    "Крипто Журнал",
+    "Биткоин База",
+    "OtFront"
+  ],
+  "west_sentiment_watchlist": [
+    {
+      "name": "Benjamin Cowen",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "InvestAnswers",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "DataDash",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "Into The Cryptoverse",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "Crypto Banter",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "Altcoin Daily",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "The Modern Investor",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "Anthony Pompliano",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "Michael Saylor",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    },
+    {
+      "name": "Raoul Pal",
+      "last_known_mood": "unknown",
+      "mood_source": "old baseline only; must be rechecked from fresh content",
+      "mood_last_checked": ""
+    }
+  ],
+  "west_bloggers": [
+    "Benjamin Cowen",
+    "InvestAnswers",
+    "DataDash",
+    "Into The Cryptoverse",
+    "Crypto Banter",
+    "Altcoin Daily",
+    "The Modern Investor",
+    "Anthony Pompliano",
+    "Michael Saylor",
+    "Raoul Pal",
+    "Coin Bureau",
+    "Bankless",
+    "Real Vision",
+    "Glassnode",
+    "Blockworks Macro"
+  ],
+  "sentiment_analysis_policy": {
+    "mood_labels": {
+      "bullish": "🟢 бычий",
+      "bearish": "🔴 медвежий",
+      "neutral": "🟡 нейтральный",
+      "unknown": "⚪ неясно"
+    },
+    "rules": [
+      "Не считать старое настроение актуальным без свежей проверки.",
+      "Если данных мало — писать unknown, а не выдумывать настроение.",
+      "Отдельно показывать настроение RU/CIS и WEST.",
+      "Не строить тему ролика только на мнении блогеров.",
+      "Использовать блогеров как сигнал толпы, а не как источник истины."
+    ]
+  },
+  "ru_cis_monitoring_sources": [
+    "Крипто Патруль",
+    "РБК Крипто",
+    "ForkLog",
+    "Bits.media",
+    "Crypto Family",
+    "Pro Blockchain",
+    "CRYPTUS",
+    "Крипто Журнал",
+    "Биткоин База",
+    "Roman Nekrasov",
+    "Happy Coin News",
+    "MarsDAO",
+    "Bitkogan",
+    "InvestFuture",
+    "Смартлаб",
+    "Тимофей Мартынов"
+  ],
+  "west_monitoring_sources": [
+    "Coin Bureau",
+    "Bankless",
+    "Real Vision",
+    "Glassnode",
+    "ARK Invest",
+    "Blockworks Macro",
+    "The Defiant",
+    "Unchained",
+    "What Bitcoin Did",
+    "CoinDesk",
+    "Cointelegraph"
+  ],
+  "own_channels": [
+    {
+      "name": "HiFi Trade",
+      "platform": "telegram",
+      "url": "https://t.me/hifitradechannel",
+      "purpose": "Свой канал. Использовать для контроля повторов, идей и связки с контентом."
+    }
+  ],
+  "watchlist_version": "v16_restored_plus_fallback_ready",
+  "watchlist_note": "Списки блогеров/источников восстановлены. В agent v29 эти же списки есть запасом внутри кода, чтобы /bloggers_now не был пустым."
 }
