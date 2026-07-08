@@ -58,6 +58,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 MEMORY_FILE = "memory.json"
 SUCCESS_FILE = "success_memory.json"
 STATE_FILE = "agent_state.json"
+COMPETITOR_VIDEO_DB_FILE = "competitor_video_db.json"
 LOG_FILE = "agent_runtime.log"
 
 logging.basicConfig(
@@ -865,6 +866,39 @@ def load_memory():
 
 def save_memory(memory):
     save_json(MEMORY_FILE, memory)
+
+
+def load_competitor_video_db_data():
+    data = load_json(COMPETITOR_VIDEO_DB_FILE, None)
+    if isinstance(data, dict):
+        db = data.get("competitor_video_db", [])
+        if not isinstance(db, list):
+            db = []
+        return {
+            "competitor_video_db": db,
+            "competitor_video_db_updated_at": data.get("competitor_video_db_updated_at", "нет")
+        }
+
+    memory = load_memory()
+    db = memory.get("competitor_video_db", [])
+    if not isinstance(db, list):
+        db = []
+
+    return {
+        "competitor_video_db": db,
+        "competitor_video_db_updated_at": memory.get("competitor_video_db_updated_at", "нет")
+    }
+
+
+def save_competitor_video_db_data(data):
+    db = data.get("competitor_video_db", []) if isinstance(data, dict) else []
+    if not isinstance(db, list):
+        db = []
+
+    save_json(COMPETITOR_VIDEO_DB_FILE, {
+        "competitor_video_db": db[-500:],
+        "competitor_video_db_updated_at": data.get("competitor_video_db_updated_at", datetime.utcnow().isoformat())
+    })
 
 def load_success():
     return load_json(SUCCESS_FILE, {
@@ -2257,7 +2291,25 @@ async def topic_gap_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     recent = summary.get("recent", [])
 
     if not recent:
-        await safe_reply(update, "База конкурентов пустая. Сначала запусти /competitor_learn")
+        await safe_reply(update, "База конкурентов пустая. Запускаю автосбор конкурентов…")
+        chat_id = update.effective_chat.id if update.effective_chat else None
+        if chat_id is not None:
+            await auto_competitor_learn_tick(
+                context.application,
+                chat_id,
+                max_channels=12,
+                max_videos=3,
+                silent=False
+            )
+
+        summary = competitor_video_db_summary(limit=100)
+        recent = summary.get("recent", [])
+
+    if not recent:
+        await safe_reply(
+            update,
+            "Не удалось собрать базу конкурентов. Проверь YouTube API key или точные ссылки на конкурентов."
+        )
         return
 
     prompt = f"""
@@ -2292,8 +2344,8 @@ async def topic_gap_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def competitor_db_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    memory = load_memory()
-    db = memory.get("competitor_video_db", [])
+    db_data = load_competitor_video_db_data()
+    db = db_data.get("competitor_video_db", [])
     if not isinstance(db, list):
         db = []
 
@@ -2306,7 +2358,7 @@ async def competitor_db_status(update: Update, context: ContextTypes.DEFAULT_TYP
         "📚 База конкурентов",
         "",
         f"Всего роликов сохранено: {len(db)}",
-        f"Последнее обновление: {memory.get('competitor_video_db_updated_at', 'нет')}",
+        f"Последнее обновление: {db_data.get('competitor_video_db_updated_at', 'нет')}",
         "",
         "Топ каналов в базе:"
     ]
@@ -4515,8 +4567,8 @@ def scan_competitor_youtube_channel(competitor, max_videos=5):
 
 
 def save_competitor_videos_to_memory(videos):
-    memory = load_memory()
-    db = memory.get("competitor_video_db", [])
+    db_data = load_competitor_video_db_data()
+    db = db_data.get("competitor_video_db", [])
     if not isinstance(db, list):
         db = []
 
@@ -4532,16 +4584,16 @@ def save_competitor_videos_to_memory(videos):
         seen.add(vid)
         added.append(video)
 
-    memory["competitor_video_db"] = db[-500:]
-    memory["competitor_video_db_updated_at"] = datetime.utcnow().isoformat()
-    save_memory(memory)
+    db_data["competitor_video_db"] = db[-500:]
+    db_data["competitor_video_db_updated_at"] = datetime.utcnow().isoformat()
+    save_competitor_video_db_data(db_data)
 
     return added
 
 
 def competitor_video_db_summary(limit=80):
-    memory = load_memory()
-    db = memory.get("competitor_video_db", [])
+    db_data = load_competitor_video_db_data()
+    db = db_data.get("competitor_video_db", [])
     if not isinstance(db, list):
         db = []
 
