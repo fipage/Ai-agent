@@ -882,12 +882,34 @@ def save_json(path, data):
 
 
 
-def load_post_style_profile():
-    data = load_json(POST_STYLE_FILE, {})
+def read_post_style_file():
+    if not os.path.exists(POST_STYLE_FILE):
+        return {"status": "missing", "data": None, "error": ""}
+    try:
+        with open(POST_STYLE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        return {"status": "corrupt", "data": None, "error": str(e)}
+    except Exception as e:
+        return {"status": "error", "data": None, "error": str(e)}
+
+    if not isinstance(data, dict):
+        return {"status": "corrupt", "data": None, "error": "root JSON value is not an object"}
+    return {"status": "ok", "data": data, "error": ""}
+
+
+def get_post_style_profile_from_data(data):
     if not isinstance(data, dict):
         return {}
-    profile = data.get("style_profile", data)
+    profile = data.get("style_profile")
     return profile if isinstance(profile, dict) else {}
+
+
+def load_post_style_profile():
+    result = read_post_style_file()
+    if result.get("status") != "ok":
+        return {}
+    return get_post_style_profile_from_data(result.get("data"))
 
 
 def save_post_style_profile(profile, examples_count=0):
@@ -902,7 +924,10 @@ def save_post_style_profile(profile, examples_count=0):
 
 
 def format_post_style_profile_for_prompt():
-    profile = load_post_style_profile()
+    result = read_post_style_file()
+    if result.get("status") != "ok":
+        return "Пользовательский style_profile не загружен. Используй только базовый HIFITRADE_POST_STYLE."
+    profile = get_post_style_profile_from_data(result.get("data"))
     if not profile:
         return "Пользовательский style_profile не загружен. Используй только базовый HIFITRADE_POST_STYLE."
     return json.dumps(profile, ensure_ascii=False, indent=2)
@@ -3030,12 +3055,20 @@ async def learn_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
     examples_text = re.sub(r"^/learn_style(?:@\w+)?\s*", "", message_text or "", flags=re.IGNORECASE).strip()
     examples = split_style_examples(examples_text)
 
-    if len(examples) < 3 or len(examples) > 10:
+    if not examples_text:
         await safe_reply(
             update,
             "Пришли /learn_style и ниже вставь 3–10 примеров своих Telegram-постов. "
-            "Разделять можно пустой строкой или строкой --- . Сейчас распознано примеров: "
-            f"{len(examples)}."
+            "Разделять можно пустой строкой или строкой --- ."
+        )
+        return
+
+    if len(examples) < 3 or len(examples) > 10:
+        await safe_reply(
+            update,
+            "Не удалось распознать нужное количество примеров. Пришли 3–10 Telegram-постов "
+            "в том же сообщении после /learn_style. Разделять можно пустой строкой или строкой --- . "
+            f"Сейчас распознано примеров: {len(examples)}."
         )
         return
 
@@ -3070,31 +3103,53 @@ async def learn_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
 
     payload = save_post_style_profile(profile, examples_count=len(examples))
-    await safe_reply(
-        update,
-        "✅ Стиль изучен и сохранён в post_style.json.\n"
-        f"Примеров: {payload.get('examples_count')}\n"
-        f"Обновлено: {payload.get('updated_at')}\n\n"
-        "Теперь черновики постов будут учитывать post_style.json + HIFITRADE_POST_STYLE."
-    )
+    saved = read_post_style_file()
+    saved_data = saved.get("data") if saved.get("status") == "ok" else {}
+    saved_profile = get_post_style_profile_from_data(saved_data)
+    if (
+        saved.get("status") != "ok"
+        or not saved_profile
+        or int(saved_data.get("examples_count", 0) or 0) != len(examples)
+    ):
+        await safe_reply(update, "Не удалось сохранить стиль в post_style.json. Повтори /learn_style.")
+        return
+
+    await safe_reply(update, f"Стиль загружен. Примеров: {payload.get('examples_count')}")
 
 
 async def style_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = load_json(POST_STYLE_FILE, {})
-    profile = data.get("style_profile") if isinstance(data, dict) else None
-    loaded = isinstance(profile, dict) and bool(profile)
-    if not loaded:
-        await safe_reply(update, "Стиль не загружен. Отправь /learn_style и 3–10 примеров постов.")
+    result = read_post_style_file()
+    if result.get("status") == "missing":
+        await safe_reply(update, "Стиль не загружен")
+        return
+    if result.get("status") != "ok":
+        await safe_reply(update, "Файл стиля повреждён. Повтори /learn_style")
         return
 
-    keys = ", ".join(list(profile.keys())[:8])
+    data = result.get("data") or {}
+    profile = get_post_style_profile_from_data(data)
+    loaded = bool(profile)
+    if not loaded:
+        await safe_reply(update, "Стиль не загружен")
+        return
+
+    description_parts = []
+    for key in ("tone", "post_length", "formatting", "conclusion_style"):
+        value = profile.get(key)
+        if isinstance(value, str) and value.strip():
+            description_parts.append(f"{key}: {value.strip()}")
+    if not description_parts:
+        rules = profile.get("generation_rules")
+        if isinstance(rules, list):
+            description_parts = [str(item).strip() for item in rules[:3] if str(item).strip()]
+    description = "; ".join(description_parts) or "описание не найдено"
+
     await safe_reply(
         update,
-        "✅ Стиль загружен.\n"
-        f"Файл: {POST_STYLE_FILE}\n"
-        f"Примеров: {data.get('examples_count', '—')}\n"
-        f"Обновлено: {data.get('updated_at', '—')}\n"
-        f"Поля профиля: {keys or '—'}"
+        "стиль загружен: да\n"
+        f"количество примеров: {data.get('examples_count', '—')}\n"
+        f"дата последнего обучения: {data.get('updated_at', '—')}\n"
+        f"краткое описание стиля: {description}"
     )
 
 
