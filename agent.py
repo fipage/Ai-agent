@@ -257,6 +257,44 @@ Tier 3 — вторичные/слабые источники: мелкие са
 Если источник слабый, агент обязан пометить это и не строить на нём главный тезис.
 """
 
+
+
+HIFITRADE_POST_STYLE = """
+Стиль Telegram-поста HiFi Trade:
+1. Писать коротко, уверенно, по делу.
+2. Стиль: авторский аналитический Telegram-пост.
+3. Не писать как новостной сайт.
+4. Не использовать канцелярит.
+5. Не использовать чрезмерно эмодзи.
+6. Не обещать прибыль.
+7. Не давать прямой финансовый совет.
+8. Не писать “покупайте”, “продавайте”, “точно будет рост”.
+9. Объяснять не только “что произошло”, но и “что это значит для рынка”.
+10. Делать вывод в конце.
+11. Сохранять оформление в стиле Telegram:
+   - короткие абзацы;
+   - смысловые блоки;
+   - списки через тире;
+   - без огромных полотен текста.
+12. В конце каждого поста обязательно добавлять:
+Источник: <ссылка>
+
+Формат поста:
+Заголовок без кликбейта, но с интригой
+
+1–2 коротких абзаца: что произошло.
+
+Что важно:
+— пункт
+— пункт
+— пункт
+
+Вывод:
+короткий авторский вывод для рынка.
+
+Источник: ссылка
+"""
+
 ANALYTICAL_CONTENT_RULES = """
 Каждая идея ролика должна содержать:
 1. Главный тезис.
@@ -978,12 +1016,29 @@ def build_news_candidates_from_sources(news, ru_youtube=None, west_youtube=None,
     return save_news_candidates(candidates[:limit])
 
 
+def is_valid_source_url(source_url):
+    if not source_url:
+        return False
+    parsed = urllib.parse.urlparse(str(source_url).strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def get_candidate_source_url(candidate):
+    return str(candidate.get("source_url") or candidate.get("link") or "").strip()
+
+
+def ensure_source_in_post(post_text, source_url):
+    post_text = str(post_text or "").strip()
+    source_url = str(source_url or "").strip()
+    post_text = re.sub(r"\n*Источник:\s*\S+\s*$", "", post_text, flags=re.IGNORECASE).strip()
+    return f"{post_text}\n\nИсточник: {source_url}".strip()
+
+
 def format_draft_message(draft):
     media = "Картинка: сгенерирована" if draft.get("image_path") else f"image_prompt:\n{draft.get('image_prompt', '—')}"
     return (
         "📝 Черновик Telegram-поста\n\n"
         f"{draft.get('post_text', '')}\n\n"
-        f"Источник: {draft.get('source', '—')}\n"
         f"Hype Score: {draft.get('hype_score', '—')}\n\n"
         f"{media}\n\n"
         "Публикуем?"
@@ -1004,8 +1059,14 @@ def draft_keyboard(draft_id):
 
 
 def generate_telegram_post_draft(candidate, rewrite_text=False, rewrite_image=False):
+    source_url = get_candidate_source_url(candidate)
     prompt = f"""
 Сделай черновик Telegram-поста для канала HiFi Trade по выбранной новости.
+
+Стиль и обязательный формат:
+{HIFITRADE_POST_STYLE}
+
+Источник для строки в конце поста: {source_url}
 
 Новость:
 {json.dumps(candidate, ensure_ascii=False, indent=2)}
@@ -1021,9 +1082,9 @@ def generate_telegram_post_draft(candidate, rewrite_text=False, rewrite_image=Fa
 - без обещаний прибыли;
 - без скама, 100x и дешёвого хайпа;
 - 900-1400 знаков;
-- сильный первый абзац;
-- понятный вывод для читателя;
-- стиль HiFi Trade: серьёзно, ясно, без воды.
+- не используй слова и формулировки: “покупайте”, “продавайте”, “точно будет рост”;
+- пост обязан закончиться ровно строкой: Источник: {source_url}
+- если переписываешь текст, всё равно сохрани этот стиль и источник в конце.
 """
     if rewrite_text:
         prompt += "\nПеределай именно текст: сделай сильнее хук и яснее вывод."
@@ -1043,8 +1104,9 @@ def generate_telegram_post_draft(candidate, rewrite_text=False, rewrite_image=Fa
             )
         }
 
+    post_text = ensure_source_in_post(str(parsed.get("post_text") or raw).strip()[:3500], source_url)
     return {
-        "post_text": str(parsed.get("post_text") or raw).strip()[:3500],
+        "post_text": post_text,
         "image_prompt": str(parsed.get("image_prompt") or "").strip()[:1200]
     }
 
@@ -3033,6 +3095,10 @@ async def pick_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not candidate.get("can_make_post", True):
         await safe_reply(update, "Эта новость помечена как неподходящая для поста.")
         return
+    source_url = get_candidate_source_url(candidate)
+    if not is_valid_source_url(source_url):
+        await safe_reply(update, "У новости нет источника. Публикация запрещена.")
+        return
 
     draft_id = stable_hash(f"{datetime.utcnow().isoformat()}-{number}-{candidate.get('topic')}")
     generated = generate_telegram_post_draft(candidate)
@@ -3042,10 +3108,11 @@ async def pick_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "status": "pending",
         "created_at": datetime.utcnow().isoformat(),
         "candidate": candidate,
-        "post_text": generated.get("post_text", ""),
+        "post_text": ensure_source_in_post(generated.get("post_text", ""), source_url),
         "image_prompt": generated.get("image_prompt", ""),
         "image_path": image_path or "",
-        "source": candidate.get("source_url") or candidate.get("source") or "—",
+        "source": source_url,
+        "source_url": source_url,
         "hype_score": candidate.get("hype_score", "—")
     }
     upsert_post_draft(draft)
@@ -3100,8 +3167,11 @@ async def draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rewrite_text=action == "rewrite_text",
             rewrite_image=action == "rewrite_image"
         )
+        source_url = draft.get("source_url") or draft.get("source") or get_candidate_source_url(draft.get("candidate", {}))
         if action == "rewrite_text":
-            draft["post_text"] = generated.get("post_text", draft.get("post_text", ""))
+            draft["post_text"] = ensure_source_in_post(generated.get("post_text", draft.get("post_text", "")), source_url)
+            draft["source"] = source_url
+            draft["source_url"] = source_url
         else:
             draft["image_prompt"] = generated.get("image_prompt", draft.get("image_prompt", ""))
             draft["image_path"] = try_generate_image(draft.get("image_prompt", ""), draft_id) or ""
@@ -3111,6 +3181,13 @@ async def draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if action == "publish":
+        source_url = draft.get("source_url") or draft.get("source") or get_candidate_source_url(draft.get("candidate", {}))
+        if not is_valid_source_url(source_url):
+            await query.edit_message_text("У новости нет источника. Публикация запрещена.")
+            return
+        draft["post_text"] = ensure_source_in_post(draft.get("post_text", ""), source_url)
+        draft["source"] = source_url
+        draft["source_url"] = source_url
         channel_id = os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
         if not channel_id:
             await query.edit_message_text("Не задан TELEGRAM_CHANNEL_ID в Railway Variables")
