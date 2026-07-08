@@ -944,9 +944,31 @@ def split_style_examples(text):
     text = str(text or "").strip()
     if not text:
         return []
-    parts = [p.strip() for p in re.split(r"\n\s*(?:---+|#{3,}|\*\*\*)\s*\n", text) if p.strip()]
-    if len(parts) == 1:
-        parts = [p.strip() for p in re.split(r"\n\s*\n(?=.{80,})", text) if p.strip()]
+
+    # Основной и самый надежный способ: пользователь разделяет посты строкой ---
+    parts = [
+        p.strip()
+        for p in re.split(r"(?m)^\s*---+\s*$", text)
+        if p.strip()
+    ]
+
+    # Если пользователь написал "Пост 1:", "Пост 2:" и т.д.
+    if len(parts) <= 1:
+        matches = list(re.finditer(r"(?im)^\s*пост\s*\d+\s*:\s*", text))
+        if len(matches) >= 2:
+            extracted = []
+            for i, m in enumerate(matches):
+                start = m.end()
+                end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+                chunk = text[start:end].strip()
+                if chunk:
+                    extracted.append(chunk)
+            parts = extracted
+
+    # Если разделителей нет, считаем всё одним примером, но НЕ режем по пустым строкам
+    if len(parts) <= 1:
+        parts = [text]
+
     return parts
 
 def load_news_candidates():
@@ -3065,19 +3087,21 @@ async def learn_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not examples_text:
         await safe_reply(
             update,
-            "Пришли /learn_style и ниже вставь 3–10 примеров своих Telegram-постов. "
-            "Разделять можно пустой строкой или строкой --- ."
+            "Пришли /learn_style и ниже вставь минимум 3 примера своих Telegram-постов. "
+            "Разделять можно строкой --- ."
         )
         return
 
-    if len(examples) < 3 or len(examples) > 10:
+    if len(examples) < 3:
         await safe_reply(
             update,
-            "Не удалось распознать нужное количество примеров. Пришли 3–10 Telegram-постов "
-            "в том же сообщении после /learn_style. Разделять можно пустой строкой или строкой --- . "
+            "Не удалось распознать нужное количество примеров. Пришли минимум 3 Telegram-поста "
+            "в том же сообщении после /learn_style. Разделять можно строкой --- . "
             f"Сейчас распознано примеров: {len(examples)}."
         )
         return
+
+    examples = examples[:10]
 
     prompt = f"""
 Проанализируй стиль автора по 3–10 примерам Telegram-постов и верни только валидный JSON без markdown.
