@@ -1922,7 +1922,7 @@ def yt_analytics_query(start_date=None, end_date=None, dimensions="video", metri
     if not start_date:
         start_date = (datetime.utcnow().date() - timedelta(days=28)).isoformat()
     if metrics is None:
-        metrics = "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,impressions,impressionsClickThroughRate"
+        metrics = "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained"
 
     params = {
         "ids": "channel==MINE",
@@ -2028,7 +2028,7 @@ def yt_learn_from_analytics(days=28, max_results=15):
             title=meta.get("title") or vid,
             url=meta.get("url", f"https://youtu.be/{vid}"),
             views=row_data.get("views", 0),
-            ctr=row_data.get("impressionsClickThroughRate"),
+            ctr=None,
             retention=row_data.get("averageViewPercentage"),
             subscribers=row_data.get("subscribersGained", 0),
             notes=f"Автоимпорт YouTube Analytics за {days} дней. Средний просмотр: {format_yt_seconds(row_data.get('averageViewDuration', 0))}. Показы: {row_data.get('impressions', 'n/a')}.",
@@ -2141,7 +2141,7 @@ async def yt_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     video_idx = headers.index("video") if "video" in headers else 0
     titles = get_youtube_video_titles([row[video_idx] for row in rows])
-    lines = [f"📊 YouTube Analytics за {days} дней:\n"]
+    lines = [f"📊 YouTube Analytics за {days} дней:\n", "Показы и CTR не запрашиваю: YouTube Analytics API отклоняет метрику impressions в этом отчёте.\n"]
     for row in rows:
         row_data = dict(zip(headers, row))
         vid = row_data.get("video")
@@ -2150,7 +2150,6 @@ async def yt_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(
             f"🎬 {title}\n"
             f"Просмотры: {row_data.get('views', 'n/a')}\n"
-            f"CTR показов: {row_data.get('impressionsClickThroughRate', 'n/a')}%\n"
             f"Удержание: {row_data.get('averageViewPercentage', 'n/a')}%\n"
             f"Средний просмотр: {format_yt_seconds(row_data.get('averageViewDuration', 0))}\n"
             f"Подписчики: +{row_data.get('subscribersGained', 0)}\n"
@@ -2185,7 +2184,7 @@ async def yt_video_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     video_id = match.group(1) if match else raw.strip()
     end_date = datetime.utcnow().date().isoformat()
     start_date = (datetime.utcnow().date() - timedelta(days=365)).isoformat()
-    data, err = yt_analytics_query(start_date=start_date, end_date=end_date, dimensions="video", metrics="views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,impressions,impressionsClickThroughRate", sort="-views", max_results=200)
+    data, err = yt_analytics_query(start_date=start_date, end_date=end_date, dimensions="video", metrics="views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained", sort="-views", max_results=200)
     if err:
         await update.message.reply_text(f"❌ Не смог получить аналитику:\n{err}")
         return
