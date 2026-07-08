@@ -1297,7 +1297,7 @@ def restricted(handler):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_user_allowed(update):
             if update and update.message:
-                await update.message.reply_text("Доступ закрыт.")
+                await safe_reply(update, "Доступ закрыт.")
             return
         return await handler(update, context)
 
@@ -1852,11 +1852,21 @@ async def send_long(context, chat_id, text):
     for i in range(0, len(text), 3500):
         await context.bot.send_message(chat_id=chat_id, text=text[i:i+3500])
 
+
+async def safe_reply(update: Update, text: str = "", max_len: int = 2500, header: str = None, **kwargs):
+    await send_chunked_message(update.message, text, max_len=max_len, header=header)
+
+
+async def safe_send(app, chat_id, text: str = "", max_len: int = 2500, header: str = None, **kwargs):
+    await send_chunked_to_chat(app, chat_id, text, max_len=max_len, header=header)
+
+
+
 async def reply_long(update, text):
     if not text:
         text = "Пустой ответ."
     for i in range(0, len(text), 3500):
-        await update.message.reply_text(text[i:i+3500])
+        await safe_reply(update, text[i:i+3500])
 
 
 
@@ -2042,7 +2052,7 @@ def yt_learn_from_analytics(days=28, max_results=15):
 
 
 
-def split_telegram_text(text, max_len=3500):
+def split_telegram_text(text, max_len=2500):
     """
     Делит длинный текст на несколько сообщений Telegram.
     Telegram лимит около 4096 символов, но оставляем запас.
@@ -2103,7 +2113,7 @@ def split_telegram_text(text, max_len=3500):
     return chunks
 
 
-async def send_chunked_message(message, text, max_len=3500, header=None):
+async def send_chunked_message(message, text, max_len=2500, header=None):
     chunks = split_telegram_text(text, max_len=max_len)
 
     if not chunks:
@@ -2123,7 +2133,7 @@ async def send_chunked_message(message, text, max_len=3500, header=None):
         await message.reply_text(prefix + chunk)
 
 
-async def send_chunked_to_chat(app, chat_id, text, max_len=3500, header=None):
+async def send_chunked_to_chat(app, chat_id, text, max_len=2500, header=None):
     chunks = split_telegram_text(text, max_len=max_len)
 
     if not chunks:
@@ -2145,9 +2155,11 @@ async def send_chunked_to_chat(app, chat_id, text, max_len=3500, header=None):
 
 
 async def split_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sample = "\n\n".join([f"Тестовый блок {i}. Если ты видишь это несколькими сообщениями — нарезка длинных ответов работает нормально." for i in range(1, 80)])
+    sample = "\\n\\n".join([
+        f"Тестовый блок {i}. Это длинный тест. Если бот прислал много сообщений с пометками Часть 1/N, Часть 2/N и так далее — нарезка работает. Текст специально сделан длиннее обычного ответа."
+        for i in range(1, 180)
+    ])
     await reply_long(update, sample)
-
 
 
 async def competitor_learn(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2170,13 +2182,13 @@ async def competitor_learn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     candidates = get_competitor_candidates(memory)[:max_channels]
 
     if not candidates:
-        await update.message.reply_text("Не нашёл конкурентов в memory.json.")
+        await safe_reply(update, "Не нашёл конкурентов в memory.json.")
         return
 
     all_videos = []
     errors = []
 
-    await update.message.reply_text(f"Начал сбор конкурентов: каналов {len(candidates)}, по {max_videos} ролика.")
+    await safe_reply(update, f"Начал сбор конкурентов: каналов {len(candidates)}, по {max_videos} ролика.")
 
     for competitor in candidates:
         videos, err = scan_competitor_youtube_channel(competitor, max_videos=max_videos)
@@ -2215,7 +2227,7 @@ async def competitor_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     recent = summary.get("recent", [])
 
     if not recent:
-        await update.message.reply_text("База конкурентов пока пустая. Сначала запусти /competitor_learn")
+        await safe_reply(update, "База конкурентов пока пустая. Сначала запусти /competitor_learn")
         return
 
     prompt = f"""
@@ -2244,7 +2256,7 @@ async def topic_gap_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     recent = summary.get("recent", [])
 
     if not recent:
-        await update.message.reply_text("База конкурентов пустая. Сначала запусти /competitor_learn")
+        await safe_reply(update, "База конкурентов пустая. Сначала запусти /competitor_learn")
         return
 
     prompt = f"""
@@ -2333,7 +2345,7 @@ async def auto_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Если хочешь поменять время — правим значения в memory.json."
     ]
 
-    await update.message.reply_text("\n".join(lines))
+    await safe_reply(update, "\n".join(lines))
 
 
 
@@ -2361,14 +2373,14 @@ async def env_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append("Если YOUTUBE_CLIENT_ID / YOUTUBE_CLIENT_SECRET / YOUTUBE_REFRESH_TOKEN тут ❌, значит переменные добавлены не туда или деплой их не подхватил.")
     lines.append("Если тут ✅, но /yt_auth_check падает — проблема уже не в Railway variables, а в OAuth-токене/доступах Google.")
 
-    await update.message.reply_text("\n".join(lines))
+    await safe_reply(update, "\n".join(lines))
 
 
 
 async def yt_auth_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     token, err = get_youtube_oauth_access_token()
     if err:
-        await update.message.reply_text(f"❌ YouTube OAuth не работает:\n{err}")
+        await safe_reply(update, f"❌ YouTube OAuth не работает:\n{err}")
         return
 
     data, err = youtube_api_get(
@@ -2377,16 +2389,16 @@ async def yt_auth_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         use_oauth=True,
     )
     if err:
-        await update.message.reply_text(f"❌ OAuth токен получен, но канал не прочитан:\n{err}")
+        await safe_reply(update, f"❌ OAuth токен получен, но канал не прочитан:\n{err}")
         return
     items = data.get("items", [])
     if not items:
-        await update.message.reply_text("❌ Канал не найден. Возможно OAuth сделан не на аккаунт владельца канала.")
+        await safe_reply(update, "❌ Канал не найден. Возможно OAuth сделан не на аккаунт владельца канала.")
         return
     channel = items[0]
     snippet = channel.get("snippet", {})
     stats = channel.get("statistics", {})
-    await update.message.reply_text(
+    await safe_reply(update, 
         "✅ YouTube OAuth работает.\n\n"
         f"Канал: {snippet.get('title', 'без названия')}\n"
         f"Подписчики: {stats.get('subscriberCount', 'скрыто')}\n"
@@ -2404,10 +2416,10 @@ async def yt_recent(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
     videos, err = get_my_recent_youtube_videos(max_results=max_results)
     if err:
-        await update.message.reply_text(f"❌ Не смог получить ролики:\n{err}")
+        await safe_reply(update, f"❌ Не смог получить ролики:\n{err}")
         return
     if not videos:
-        await update.message.reply_text("Ролики не найдены.")
+        await safe_reply(update, "Ролики не найдены.")
         return
     lines = ["🎬 Последние ролики канала:\n"]
     for i, item in enumerate(videos, 1):
@@ -2430,12 +2442,12 @@ async def yt_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start_date = (datetime.utcnow().date() - timedelta(days=days)).isoformat()
     data, err = yt_analytics_query(start_date=start_date, end_date=end_date, dimensions="video", sort="-views", max_results=10)
     if err:
-        await update.message.reply_text(f"❌ Не смог получить YouTube Analytics:\n{err}")
+        await safe_reply(update, f"❌ Не смог получить YouTube Analytics:\n{err}")
         return
     rows = data.get("rows", [])
     headers = [h.get("name") for h in data.get("columnHeaders", [])]
     if not rows:
-        await update.message.reply_text(f"За последние {days} дней YouTube Analytics не вернул строк.")
+        await safe_reply(update, f"За последние {days} дней YouTube Analytics не вернул строк.")
         return
     video_idx = headers.index("video") if "video" in headers else 0
     titles = get_youtube_video_titles([row[video_idx] for row in rows])
@@ -2465,18 +2477,18 @@ async def yt_learn(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
     saved, err = yt_learn_from_analytics(days=days, max_results=15)
     if err:
-        await update.message.reply_text(f"❌ Не смог обучиться на YouTube Analytics:\n{err}")
+        await safe_reply(update, f"❌ Не смог обучиться на YouTube Analytics:\n{err}")
         return
     if not saved:
-        await update.message.reply_text(f"За последние {days} дней нечего импортировать.")
+        await safe_reply(update, f"За последние {days} дней нечего импортировать.")
         return
-    await update.message.reply_text(f"✅ Импортировал в память метрики роликов: {len(saved)} шт.\nПериод: последние {days} дней.\n\nТеперь вызови /performance или /strategy10.")
+    await safe_reply(update, f"✅ Импортировал в память метрики роликов: {len(saved)} шт.\nПериод: последние {days} дней.\n\nТеперь вызови /performance или /strategy10.")
 
 
 async def yt_video_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw = " ".join(context.args).strip()
     if not raw:
-        await update.message.reply_text("Пришли ссылку или ID ролика:\n/yt_video_stats https://youtu.be/...")
+        await safe_reply(update, "Пришли ссылку или ID ролика:\n/yt_video_stats https://youtu.be/...")
         return
     match = re.search(r"(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{8,})", raw)
     video_id = match.group(1) if match else raw.strip()
@@ -2484,7 +2496,7 @@ async def yt_video_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start_date = (datetime.utcnow().date() - timedelta(days=365)).isoformat()
     data, err = yt_analytics_query(start_date=start_date, end_date=end_date, dimensions="video", metrics="views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained", sort="-views", max_results=200)
     if err:
-        await update.message.reply_text(f"❌ Не смог получить аналитику:\n{err}")
+        await safe_reply(update, f"❌ Не смог получить аналитику:\n{err}")
         return
     headers = [h.get("name") for h in data.get("columnHeaders", [])]
     found = None
@@ -2496,7 +2508,7 @@ async def yt_video_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     titles = get_youtube_video_titles([video_id])
     title = titles.get(video_id, {}).get("title", video_id)
     if not found:
-        await update.message.reply_text(f"Не нашёл этот ролик в Analytics за последние 365 дней.\nНазвание: {title}\nВозможно, мало данных или другой аккаунт OAuth.")
+        await safe_reply(update, f"Не нашёл этот ролик в Analytics за последние 365 дней.\nНазвание: {title}\nВозможно, мало данных или другой аккаунт OAuth.")
         return
     prompt = f"""
 Разбери статистику ролика HiFi Trade.
@@ -2550,12 +2562,12 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Если в списках не 0 — бот готов."
     ]
 
-    await update.message.reply_text("\n".join(lines))
+    await safe_reply(update, "\n".join(lines))
 
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+    await safe_reply(update, 
         "HiFi Trade AI Growth Team запущен ✅\n\n"
         "Сначала отправь:\n"
         "/setchat\n\n"
@@ -2588,7 +2600,7 @@ async def setchat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     memory = load_memory()
     memory["telegram_chat_id"] = str(update.effective_chat.id)
     save_memory(memory)
-    await update.message.reply_text("Чат сохранён ✅ Теперь я смогу присылать отчёты автоматически.")
+    await safe_reply(update, "Чат сохранён ✅ Теперь я смогу присылать отчёты автоматически.")
 
 async def morning_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     fear_greed = get_fear_greed_index()
@@ -3045,7 +3057,7 @@ async def channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     channel_id = get_channel_id_from_video(ref_video)
 
     if not channel_id:
-        await update.message.reply_text("Не смог получить channelId. Проверь reference_video в memory.json.")
+        await safe_reply(update, "Не смог получить channelId. Проверь reference_video в memory.json.")
         return
 
     videos = get_channel_videos(channel_id)
@@ -3069,12 +3081,12 @@ async def channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = " ".join(context.args).strip()
     if not url:
-        await update.message.reply_text("Используй: /review ссылка")
+        await safe_reply(update, "Используй: /review ссылка")
         return
 
     video = get_video_data(url)
     if not video:
-        await update.message.reply_text("Видео не найдено.")
+        await safe_reply(update, "Видео не найдено.")
         return
 
     snippet = video["snippet"]
@@ -3111,12 +3123,12 @@ async def review(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def thumbnail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = " ".join(context.args).strip()
     if not url:
-        await update.message.reply_text("Используй: /thumbnail ссылка")
+        await safe_reply(update, "Используй: /thumbnail ссылка")
         return
 
     video = get_video_data(url)
     if not video:
-        await update.message.reply_text("Видео не найдено.")
+        await safe_reply(update, "Видео не найдено.")
         return
 
     snippet = video["snippet"]
@@ -3477,12 +3489,12 @@ WEST:
 async def remember_success(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = " ".join(context.args).strip()
     if not url:
-        await update.message.reply_text("Используй: /remember_success ссылка")
+        await safe_reply(update, "Используй: /remember_success ссылка")
         return
 
     video = get_video_data(url)
     if not video:
-        await update.message.reply_text("Видео не найдено.")
+        await safe_reply(update, "Видео не найдено.")
         return
 
     snippet = video["snippet"]
@@ -3499,7 +3511,7 @@ async def remember_success(update: Update, context: ContextTypes.DEFAULT_TYPE):
     })
     save_success(data)
 
-    await update.message.reply_text("Успешный ролик запомнен ✅")
+    await safe_reply(update, "Успешный ролик запомнен ✅")
 
 async def winners(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_success()
@@ -3518,7 +3530,7 @@ async def winners(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def scoreidea(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).strip()
     if not query:
-        await update.message.reply_text("Используй: /scoreidea идея_ролика")
+        await safe_reply(update, "Используй: /scoreidea идея_ролика")
         return
 
     prompt = f"""
@@ -3545,7 +3557,7 @@ async def scoreidea(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def scoretitle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).strip()
     if not query:
-        await update.message.reply_text("Используй: /scoretitle название_ролика")
+        await safe_reply(update, "Используй: /scoretitle название_ролика")
         return
 
     prompt = f"""
@@ -3584,7 +3596,7 @@ async def import_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw = raw.replace("/import_perf", "", 1).strip()
 
     if not raw:
-        await update.message.reply_text(
+        await safe_reply(update, 
             "Пришли данные так:\n\n"
             "/import_perf\n"
             "title,views,ctr,retention,subscribers,notes\n"
@@ -3598,21 +3610,21 @@ async def import_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows = list(reader)
         saved = remember_video_performance_bulk(rows)
     except Exception as e:
-        await update.message.reply_text(f"Не смог разобрать таблицу: {e}")
+        await safe_reply(update, f"Не смог разобрать таблицу: {e}")
         return
 
     if not saved:
-        await update.message.reply_text("Не нашёл ролики для импорта. Проверь заголовки колонок: title,views,ctr,retention,subscribers,notes")
+        await safe_reply(update, "Не нашёл ролики для импорта. Проверь заголовки колонок: title,views,ctr,retention,subscribers,notes")
         return
 
-    await update.message.reply_text(f"Импортировал метрики роликов: {len(saved)} шт.\nТеперь можно вызвать /performance")
+    await safe_reply(update, f"Импортировал метрики роликов: {len(saved)} шт.\nТеперь можно вызвать /performance")
 
 
 async def editor10(update: Update, context: ContextTypes.DEFAULT_TYPE):
     idea = " ".join(context.args).strip()
 
     if not idea:
-        await update.message.reply_text(
+        await safe_reply(update, 
             "Используй:\n"
             "/editor10 идея ролика\n\n"
             "Пример:\n"
@@ -3687,7 +3699,7 @@ async def remember_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw = " ".join(context.args).strip()
 
     if not raw:
-        await update.message.reply_text(
+        await safe_reply(update, 
             "Используй:\n"
             "/remember_perf title=... views=... ctr=... retention=... subscribers=... url=... notes=..."
         )
@@ -3709,7 +3721,7 @@ async def remember_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     notes = extract_field("notes", "")
 
     if not title:
-        await update.message.reply_text("Не вижу title=. Пример: /remember_perf title=BTC не падает views=1500 ctr=6.2 retention=38 subscribers=12")
+        await safe_reply(update, "Не вижу title=. Пример: /remember_perf title=BTC не падает views=1500 ctr=6.2 retention=38 subscribers=12")
         return
 
     item = remember_video_performance(
@@ -3722,7 +3734,7 @@ async def remember_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         notes=notes
     )
 
-    await update.message.reply_text(
+    await safe_reply(update, 
         f"Запомнил результат ролика.\n"
         f"Название: {item['title']}\n"
         f"Результат: {item['result']}\n"
@@ -3737,7 +3749,7 @@ async def performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     recent = perf.get("video_performance", [])[-10:]
 
     if not recent:
-        await update.message.reply_text("Пока нет сохранённых результатов роликов.")
+        await safe_reply(update, "Пока нет сохранённых результатов роликов.")
         return
 
     prompt = f"""
@@ -3798,7 +3810,7 @@ async def memory_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cheap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).strip()
     if not query:
-        await update.message.reply_text("Напиши так: /cheap вопрос")
+        await safe_reply(update, "Напиши так: /cheap вопрос")
         return
     await reply_long(update, ask_ai("Ответь максимально кратко: " + query, max_chars=1200))
 
@@ -4196,7 +4208,7 @@ async def market_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def riskcheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).strip()
     if not query:
-        await update.message.reply_text("Используй: /riskcheck название_токена_или_тема_или_текст")
+        await safe_reply(update, "Используй: /riskcheck название_токена_или_тема_или_текст")
         return
     heuristic = scam_risk_score_text(query)
     prompt = f"""
@@ -4254,13 +4266,13 @@ async def smart_monitor_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     strong_events = pick_new_strong_events(events, min_score=min_score, limit=3)
 
     if not strong_events:
-        await update.message.reply_text("Сильных новых инфоповодов пока не найдено.")
+        await safe_reply(update, "Сильных новых инфоповодов пока не найдено.")
         return
 
     alert = build_smart_monitor_alert(strong_events)
 
     if not alert or "NO_ALERT" in alert.strip()[:30]:
-        await update.message.reply_text("События есть, но они пока недостаточно сильные для alert.")
+        await safe_reply(update, "События есть, но они пока недостаточно сильные для alert.")
         for e in strong_events:
             save_seen_event_key(e.get("key", ""))
         return
