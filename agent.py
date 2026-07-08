@@ -2041,6 +2041,115 @@ def yt_learn_from_analytics(days=28, max_results=15):
 
 
 
+
+def split_telegram_text(text, max_len=3500):
+    """
+    Делит длинный текст на несколько сообщений Telegram.
+    Telegram лимит около 4096 символов, но оставляем запас.
+    Делит по абзацам/строкам, чтобы не резать мысль посередине.
+    """
+    text = str(text or "").strip()
+    if not text:
+        return []
+
+    if len(text) <= max_len:
+        return [text]
+
+    chunks = []
+    current = ""
+
+    # Сначала делим по двойным переносам, потом по строкам
+    blocks = re.split(r"(\n\s*\n)", text)
+
+    for block in blocks:
+        if not block:
+            continue
+
+        if len(current) + len(block) <= max_len:
+            current += block
+            continue
+
+        if current.strip():
+            chunks.append(current.strip())
+            current = ""
+
+        # Если сам блок огромный — режем по строкам
+        if len(block) > max_len:
+            lines = block.splitlines(keepends=True)
+            line_buf = ""
+
+            for line in lines:
+                if len(line_buf) + len(line) <= max_len:
+                    line_buf += line
+                else:
+                    if line_buf.strip():
+                        chunks.append(line_buf.strip())
+                    line_buf = ""
+
+                    # Если одна строка слишком длинная — режем грубо
+                    while len(line) > max_len:
+                        chunks.append(line[:max_len].strip())
+                        line = line[max_len:]
+                    line_buf = line
+
+            if line_buf.strip():
+                chunks.append(line_buf.strip())
+        else:
+            current = block
+
+    if current.strip():
+        chunks.append(current.strip())
+
+    return chunks
+
+
+async def send_chunked_message(message, text, max_len=3500, header=None):
+    chunks = split_telegram_text(text, max_len=max_len)
+
+    if not chunks:
+        return
+
+    total = len(chunks)
+
+    for i, chunk in enumerate(chunks, 1):
+        prefix = ""
+
+        if header and i == 1:
+            prefix += header.strip() + "\n\n"
+
+        if total > 1:
+            prefix += f"Часть {i}/{total}\n\n"
+
+        await message.reply_text(prefix + chunk)
+
+
+async def send_chunked_to_chat(app, chat_id, text, max_len=3500, header=None):
+    chunks = split_telegram_text(text, max_len=max_len)
+
+    if not chunks:
+        return
+
+    total = len(chunks)
+
+    for i, chunk in enumerate(chunks, 1):
+        prefix = ""
+
+        if header and i == 1:
+            prefix += header.strip() + "\n\n"
+
+        if total > 1:
+            prefix += f"Часть {i}/{total}\n\n"
+
+        await app.bot.send_message(chat_id=chat_id, text=prefix + chunk)
+
+
+
+async def split_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sample = "\n\n".join([f"Тестовый блок {i}. Если ты видишь это несколькими сообщениями — нарезка длинных ответов работает нормально." for i in range(1, 80)])
+    await reply_long(update, sample)
+
+
+
 async def competitor_learn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     max_channels = 12
     max_videos = 3
@@ -4854,6 +4963,7 @@ def main():
     app.add_handler(CommandHandler("competitor_digest", restricted(competitor_digest)))
     app.add_handler(CommandHandler("topic_gap_auto", restricted(topic_gap_auto)))
     app.add_handler(CommandHandler("competitor_db_status", restricted(competitor_db_status)))
+    app.add_handler(CommandHandler("split_test", restricted(split_test)))
     app.add_handler(CommandHandler("yt_auth_check", restricted(yt_auth_check)))
     app.add_handler(CommandHandler("yt_recent", restricted(yt_recent)))
     app.add_handler(CommandHandler("yt_analytics", restricted(yt_analytics)))
