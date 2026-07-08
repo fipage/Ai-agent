@@ -2040,6 +2040,165 @@ def yt_learn_from_analytics(days=28, max_results=15):
 
 
 
+
+async def competitor_learn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    max_channels = 12
+    max_videos = 3
+
+    if len(context.args) >= 1:
+        try:
+            max_channels = min(max(int(context.args[0]), 1), 25)
+        except Exception:
+            pass
+
+    if len(context.args) >= 2:
+        try:
+            max_videos = min(max(int(context.args[1]), 1), 10)
+        except Exception:
+            pass
+
+    memory = load_memory()
+    candidates = get_competitor_candidates(memory)[:max_channels]
+
+    if not candidates:
+        await update.message.reply_text("Не нашёл конкурентов в memory.json.")
+        return
+
+    all_videos = []
+    errors = []
+
+    await update.message.reply_text(f"Начал сбор конкурентов: каналов {len(candidates)}, по {max_videos} ролика.")
+
+    for competitor in candidates:
+        videos, err = scan_competitor_youtube_channel(competitor, max_videos=max_videos)
+        if err:
+            errors.append(f"{competitor.get('name')}: {err}")
+            continue
+        all_videos.extend(videos or [])
+
+    added = save_competitor_videos_to_memory(all_videos)
+
+    lines = [
+        "✅ Сбор базы конкурентов завершён",
+        "",
+        f"Проверено каналов: {len(candidates)}",
+        f"Новых роликов добавлено: {len(added)}",
+        f"Ошибок: {len(errors)}",
+        ""
+    ]
+
+    if added:
+        lines.append("Новые ролики:")
+        for item in added[:15]:
+            lines.append(f"— {item.get('channel_title')}: {item.get('title')}")
+            lines.append(item.get("url", ""))
+
+    if errors:
+        lines.append("")
+        lines.append("Ошибки:")
+        lines.extend(errors[:10])
+
+    await reply_long(update, "\n".join(lines))
+
+
+async def competitor_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    summary = competitor_video_db_summary(limit=80)
+    recent = summary.get("recent", [])
+
+    if not recent:
+        await update.message.reply_text("База конкурентов пока пустая. Сначала запусти /competitor_learn")
+        return
+
+    prompt = f"""
+Проанализируй свежую базу роликов конкурентов HiFi Trade.
+
+Данные:
+{json.dumps(summary, ensure_ascii=False, indent=2)}
+
+Дай:
+1. Какие темы сейчас повторяются у конкурентов
+2. Где толпа слишком однообразна
+3. Какие темы можно раскрыть лучше
+4. Где есть риск инфоцыганства/пустого хайпа
+5. 5 идей роликов для HiFi Trade
+6. 5 идей Shorts
+7. Что НЕ стоит снимать
+
+Ответ на русском. Без воды.
+"""
+
+    await reply_long(update, ask_ai(prompt, max_chars=3500))
+
+
+async def topic_gap_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    summary = competitor_video_db_summary(limit=100)
+    recent = summary.get("recent", [])
+
+    if not recent:
+        await update.message.reply_text("База конкурентов пустая. Сначала запусти /competitor_learn")
+        return
+
+    prompt = f"""
+Найди topic gap для канала HiFi Trade на базе роликов конкурентов.
+
+База конкурентов:
+{json.dumps(summary, ensure_ascii=False, indent=2)}
+
+Задача:
+Найди темы, где конкуренты уже создают спрос, но можно сделать лучше:
+- глубже,
+- понятнее,
+- с источниками,
+- без инфоцыганства,
+- с сильной YouTube-упаковкой.
+
+Дай 7 тем.
+
+Для каждой:
+1. Название ролика
+2. Почему это gap
+3. Как раскрыть лучше конкурентов
+4. Какие данные/источники показать
+5. Контраргумент
+6. Превью-текст 2-4 слова
+7. Оценка /10
+
+Ответ на русском.
+"""
+
+    await reply_long(update, ask_ai(prompt, max_chars=4500))
+
+
+async def competitor_db_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    memory = load_memory()
+    db = memory.get("competitor_video_db", [])
+    if not isinstance(db, list):
+        db = []
+
+    competitors = {}
+    for item in db:
+        name = item.get("channel_title") or item.get("competitor") or "unknown"
+        competitors[name] = competitors.get(name, 0) + 1
+
+    lines = [
+        "📚 База конкурентов",
+        "",
+        f"Всего роликов сохранено: {len(db)}",
+        f"Последнее обновление: {memory.get('competitor_video_db_updated_at', 'нет')}",
+        "",
+        "Топ каналов в базе:"
+    ]
+
+    for name, count in sorted(competitors.items(), key=lambda x: x[1], reverse=True)[:15]:
+        lines.append(f"— {name}: {count}")
+
+    if not db:
+        lines.append("")
+        lines.append("База пустая. Запусти /competitor_learn")
+
+    await reply_long(update, "\n".join(lines))
+
+
 async def auto_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     memory = load_memory()
 
@@ -2058,6 +2217,9 @@ async def auto_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "",
         f"Проверка новых роликов 24/72 часа: {'включена' if memory.get('yt_new_video_check_enabled', True) else 'выключена'}",
         f"Время проверки: {memory.get('yt_new_video_check_time', '20:00')}",
+        "",
+        f"Автосбор конкурентов: {'включен' if memory.get('competitor_auto_learn_enabled', True) else 'выключен'}",
+        f"Время автосбора конкурентов: {memory.get('competitor_auto_learn_time', '22:00')}",
         "",
         "Если хочешь поменять время — правим значения в memory.json."
     ]
@@ -4031,6 +4193,286 @@ def get_yt_analytics_row_for_video(video_id, days=365):
     return None, "Видео не найдено в YouTube Analytics за выбранный период."
 
 
+
+def extract_youtube_handle_or_channel(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+
+    if "youtube.com/@" in value:
+        return value.split("youtube.com/@", 1)[1].split("/", 1)[0].split("?", 1)[0]
+
+    if "@" in value and "youtube" not in value:
+        return value.split("@", 1)[1].split("/", 1)[0].strip()
+
+    if "youtube.com/channel/" in value:
+        return value.split("youtube.com/channel/", 1)[1].split("/", 1)[0].split("?", 1)[0]
+
+    return value
+
+
+def youtube_search_channels(query, max_results=1):
+    api_key = os.getenv("YOUTUBE_API_KEY", "").strip()
+    if not api_key:
+        return None, "Не задан YOUTUBE_API_KEY."
+
+    data, err = youtube_api_get(
+        "https://www.googleapis.com/youtube/v3/search",
+        params={
+            "part": "snippet",
+            "type": "channel",
+            "q": query,
+            "maxResults": max_results
+        },
+        use_oauth=False
+    )
+    if err:
+        return None, err
+
+    return data.get("items", []), None
+
+
+def get_channel_uploads_playlist(channel_id):
+    data, err = youtube_api_get(
+        "https://www.googleapis.com/youtube/v3/channels",
+        params={
+            "part": "snippet,contentDetails,statistics",
+            "id": channel_id
+        },
+        use_oauth=False
+    )
+    if err:
+        return None, None, err
+
+    items = data.get("items", [])
+    if not items:
+        return None, None, "Канал не найден."
+
+    item = items[0]
+    uploads = item.get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads")
+    return uploads, item, None
+
+
+def get_recent_videos_from_uploads_playlist(playlist_id, max_results=5):
+    data, err = youtube_api_get(
+        "https://www.googleapis.com/youtube/v3/playlistItems",
+        params={
+            "part": "snippet,contentDetails",
+            "playlistId": playlist_id,
+            "maxResults": max_results
+        },
+        use_oauth=False
+    )
+    if err:
+        return None, err
+
+    video_ids = [
+        item.get("contentDetails", {}).get("videoId")
+        for item in data.get("items", [])
+        if item.get("contentDetails", {}).get("videoId")
+    ]
+
+    if not video_ids:
+        return [], None
+
+    videos, err = youtube_api_get(
+        "https://www.googleapis.com/youtube/v3/videos",
+        params={
+            "part": "snippet,statistics,contentDetails",
+            "id": ",".join(video_ids)
+        },
+        use_oauth=False
+    )
+    if err:
+        return None, err
+
+    return videos.get("items", []), None
+
+
+def normalize_competitor_entry(entry):
+    if isinstance(entry, dict):
+        name = entry.get("name") or entry.get("title") or entry.get("channel") or ""
+        url = entry.get("url") or entry.get("link") or ""
+        platform = entry.get("platform", "")
+    else:
+        name = str(entry)
+        url = ""
+        platform = ""
+
+    return {
+        "name": str(name).strip(),
+        "url": str(url).strip(),
+        "platform": str(platform).strip()
+    }
+
+
+def get_competitor_candidates(memory):
+    raw = []
+    for key in ["ru_cis_bloggers", "west_bloggers"]:
+        value = memory.get(key, [])
+        if isinstance(value, list):
+            raw.extend(value)
+
+    result = []
+    seen = set()
+
+    for entry in raw:
+        item = normalize_competitor_entry(entry)
+        name = item.get("name", "")
+        url = item.get("url", "")
+
+        # Берём только YouTube или элементы, где можно попробовать поиск по названию.
+        if not name:
+            continue
+
+        identity = (name.lower(), url.lower())
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append(item)
+
+    return result
+
+
+def scan_competitor_youtube_channel(competitor, max_videos=5):
+    name = competitor.get("name", "")
+    url = competitor.get("url", "")
+
+    channel_id = ""
+    query = name
+
+    if "youtube.com/channel/" in url:
+        channel_id = extract_youtube_handle_or_channel(url)
+    elif "youtube.com/@" in url:
+        query = "@" + extract_youtube_handle_or_channel(url)
+    elif url:
+        query = url
+
+    if not channel_id:
+        channels, err = youtube_search_channels(query, max_results=1)
+        if err:
+            return None, err
+        if not channels:
+            return None, f"Не найден YouTube-канал для {name}"
+
+        channel_id = channels[0].get("snippet", {}).get("channelId")
+        if not channel_id:
+            return None, f"Не найден channelId для {name}"
+
+    uploads, channel_meta, err = get_channel_uploads_playlist(channel_id)
+    if err:
+        return None, err
+    if not uploads:
+        return None, f"Не найден uploads playlist для {name}"
+
+    videos, err = get_recent_videos_from_uploads_playlist(uploads, max_results=max_videos)
+    if err:
+        return None, err
+
+    channel_title = channel_meta.get("snippet", {}).get("title", name) if channel_meta else name
+
+    parsed = []
+    for video in videos:
+        snippet = video.get("snippet", {})
+        stats = video.get("statistics", {})
+        vid = video.get("id", "")
+
+        parsed.append({
+            "competitor": name,
+            "channel_title": channel_title,
+            "video_id": vid,
+            "title": snippet.get("title", ""),
+            "published_at": snippet.get("publishedAt", ""),
+            "url": f"https://youtu.be/{vid}" if vid else "",
+            "views": stats.get("viewCount"),
+            "likes": stats.get("likeCount"),
+            "comments": stats.get("commentCount")
+        })
+
+    return parsed, None
+
+
+def save_competitor_videos_to_memory(videos):
+    memory = load_memory()
+    db = memory.get("competitor_video_db", [])
+    if not isinstance(db, list):
+        db = []
+
+    seen = {item.get("video_id") for item in db if isinstance(item, dict)}
+    added = []
+
+    for video in videos:
+        vid = video.get("video_id")
+        if not vid or vid in seen:
+            continue
+        video["saved_at"] = datetime.utcnow().isoformat()
+        db.append(video)
+        seen.add(vid)
+        added.append(video)
+
+    memory["competitor_video_db"] = db[-500:]
+    memory["competitor_video_db_updated_at"] = datetime.utcnow().isoformat()
+    save_memory(memory)
+
+    return added
+
+
+def competitor_video_db_summary(limit=80):
+    memory = load_memory()
+    db = memory.get("competitor_video_db", [])
+    if not isinstance(db, list):
+        db = []
+
+    recent = db[-limit:]
+
+    return {
+        "total_saved": len(db),
+        "recent": recent
+    }
+
+
+async def auto_competitor_learn_tick(app, chat_id, max_channels=12, max_videos=3, silent=True):
+    memory = load_memory()
+    candidates = get_competitor_candidates(memory)[:max_channels]
+
+    if not candidates:
+        if not silent:
+            await send_long(app, chat_id, "⚠️ Не нашёл список конкурентов в memory.json.")
+        return
+
+    all_videos = []
+    errors = []
+
+    for competitor in candidates:
+        videos, err = scan_competitor_youtube_channel(competitor, max_videos=max_videos)
+        if err:
+            errors.append(f"{competitor.get('name')}: {err}")
+            continue
+        all_videos.extend(videos or [])
+
+    added = save_competitor_videos_to_memory(all_videos)
+
+    if silent and not added:
+        return
+
+    text = (
+        f"🧠 База конкурентов обновлена\n\n"
+        f"Проверено каналов: {len(candidates)}\n"
+        f"Новых роликов добавлено: {len(added)}\n"
+        f"Ошибок: {len(errors)}"
+    )
+
+    if added:
+        text += "\n\nНовые ролики:\n"
+        for item in added[:10]:
+            text += f"— {item.get('channel_title')}: {item.get('title')}\n{item.get('url')}\n"
+
+    if errors and not silent:
+        text += "\n\nОшибки:\n" + "\n".join(errors[:8])
+
+    await send_long(app, chat_id, text)
+
+
 async def auto_youtube_learn_tick(app, chat_id, days=7):
     saved, err = yt_learn_from_analytics(days=days, max_results=15)
 
@@ -4188,6 +4630,11 @@ async def scheduled_loop(app):
 
                 yt_new_video_check_enabled = memory.get("yt_new_video_check_enabled", True)
                 yt_new_video_check_time = memory.get("yt_new_video_check_time", "20:00")
+
+                competitor_auto_learn_enabled = memory.get("competitor_auto_learn_enabled", True)
+                competitor_auto_learn_time = memory.get("competitor_auto_learn_time", "22:00")
+                competitor_auto_learn_max_channels = int(memory.get("competitor_auto_learn_max_channels", 12))
+                competitor_auto_learn_max_videos = int(memory.get("competitor_auto_learn_max_videos", 3))
 
                 if current_time == daily_time:
                     key = f"{date_key}-daily"
@@ -4360,6 +4807,20 @@ RU/CIS:
                         mark_sent_key(sent_keys, key72)
 
 
+
+                if competitor_auto_learn_enabled and current_time == competitor_auto_learn_time:
+                    key = f"{date_key}-competitor-auto-learn"
+                    if key not in sent_keys:
+                        await auto_competitor_learn_tick(
+                            app,
+                            chat_id,
+                            max_channels=competitor_auto_learn_max_channels,
+                            max_videos=competitor_auto_learn_max_videos,
+                            silent=True
+                        )
+                        mark_sent_key(sent_keys, key)
+
+
             if chat_id and smart_monitor_enabled:
                 minute = int(datetime.now(get_timezone()).strftime("%M"))
                 if smart_monitor_interval_minutes > 0 and minute % smart_monitor_interval_minutes == 0:
@@ -4389,6 +4850,10 @@ def main():
     app.add_handler(CommandHandler("health", restricted(health)))
     app.add_handler(CommandHandler("env_check", restricted(env_check)))
     app.add_handler(CommandHandler("auto_status", restricted(auto_status)))
+    app.add_handler(CommandHandler("competitor_learn", restricted(competitor_learn)))
+    app.add_handler(CommandHandler("competitor_digest", restricted(competitor_digest)))
+    app.add_handler(CommandHandler("topic_gap_auto", restricted(topic_gap_auto)))
+    app.add_handler(CommandHandler("competitor_db_status", restricted(competitor_db_status)))
     app.add_handler(CommandHandler("yt_auth_check", restricted(yt_auth_check)))
     app.add_handler(CommandHandler("yt_recent", restricted(yt_recent)))
     app.add_handler(CommandHandler("yt_analytics", restricted(yt_analytics)))
