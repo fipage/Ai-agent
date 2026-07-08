@@ -353,6 +353,241 @@ def performance_context_for_prompt():
     }
 
 
+
+DEFAULT_RU_CIS_SENTIMENT_WATCHLIST = [
+    {
+        "name": "InvTrading",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "MrMozart",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "PifagorTrade",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "Рафаэль Слезы Сатоши",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "Юра Франциско",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "IKIGAI",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "Биткоин Адепт",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "Разумный Инвестор",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "Cryptus",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "Богдан Где Иксы",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "Факич",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "Ридван",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "HAMAHA",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "OtFront",
+        "last_known_mood": "unknown",
+        "mood_source": "added from user-provided target @OtFront; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    }
+]
+
+DEFAULT_RU_CIS_BLOGGERS = [
+    "InvTrading",
+    "MrMozart",
+    "PifagorTrade",
+    "Рафаэль Слезы Сатоши",
+    "Юра Франциско",
+    "IKIGAI",
+    "Биткоин Адепт",
+    "Разумный Инвестор",
+    "Cryptus",
+    "Богдан Где Иксы",
+    "Факич",
+    "Ридван",
+    "HAMAHA",
+    "Крипто Патруль",
+    "РБК Крипто",
+    "ForkLog",
+    "Bits.media",
+    "Crypto Family",
+    "Pro Blockchain",
+    "Крипто Журнал",
+    "Биткоин База",
+    "OtFront"
+]
+
+DEFAULT_RU_CIS_MONITORING_SOURCES = [
+    "Крипто Патруль",
+    "РБК Крипто",
+    "ForkLog",
+    "Bits.media",
+    "Crypto Family",
+    "Pro Blockchain",
+    "CRYPTUS",
+    "Крипто Журнал",
+    "Биткоин База",
+    "Roman Nekrasov",
+    "Happy Coin News",
+    "MarsDAO",
+    "Bitkogan",
+    "InvestFuture",
+    "Смартлаб",
+    "Тимофей Мартынов"
+]
+
+DEFAULT_WEST_SENTIMENT_WATCHLIST = [
+    {
+        "name": "Benjamin Cowen",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "InvestAnswers",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "DataDash",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "Into The Cryptoverse",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "Crypto Banter",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "Altcoin Daily",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "The Modern Investor",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "Anthony Pompliano",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "Michael Saylor",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    },
+    {
+        "name": "Raoul Pal",
+        "last_known_mood": "unknown",
+        "mood_source": "old baseline only; must be rechecked from fresh content",
+        "mood_last_checked": ""
+    }
+]
+
+DEFAULT_WEST_BLOGGERS = [
+    "Benjamin Cowen",
+    "InvestAnswers",
+    "DataDash",
+    "Into The Cryptoverse",
+    "Crypto Banter",
+    "Altcoin Daily",
+    "The Modern Investor",
+    "Anthony Pompliano",
+    "Michael Saylor",
+    "Raoul Pal",
+    "Coin Bureau",
+    "Bankless",
+    "Real Vision",
+    "Glassnode",
+    "Blockworks Macro"
+]
+
+DEFAULT_WEST_MONITORING_SOURCES = [
+    "Coin Bureau",
+    "Bankless",
+    "Real Vision",
+    "Glassnode",
+    "ARK Invest",
+    "Blockworks Macro",
+    "The Defiant",
+    "Unchained",
+    "What Bitcoin Did",
+    "CoinDesk",
+    "Cointelegraph"
+]
+
+
+def get_memory_list(memory, key, fallback):
+    value = memory.get(key)
+    if isinstance(value, list) and len(value) > 0:
+        return value
+    return fallback
+
+
 def load_json(path, default):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -1513,7 +1748,7 @@ def collect_btc_sentiment_influencers():
         })
 
     # RU/CIS: directional crypto/BTC influencers
-    for item in memory.get("ru_cis_sentiment_watchlist", []):
+    for item in get_memory_list(memory, "ru_cis_sentiment_watchlist", DEFAULT_RU_CIS_SENTIMENT_WATCHLIST):
         add_row(
             item.get("name", ""),
             item.get("last_known_mood", "neutral"),
@@ -1522,15 +1757,15 @@ def collect_btc_sentiment_influencers():
         )
 
     # RU/CIS: media / channels / broader socio-economic sources
-    for name in memory.get("ru_cis_monitoring_sources", []):
+    for name in get_memory_list(memory, "ru_cis_monitoring_sources", DEFAULT_RU_CIS_MONITORING_SOURCES):
         add_row(name, "unknown", "RU/CIS", "media")
 
     # Legacy RU/CIS list support
-    for name in memory.get("ru_cis_bloggers", []):
+    for name in get_memory_list(memory, "ru_cis_bloggers", DEFAULT_RU_CIS_BLOGGERS):
         add_row(name, "unknown", "RU/CIS", "source")
 
     # WEST: directional crypto/BTC influencers
-    for item in memory.get("west_sentiment_watchlist", []):
+    for item in get_memory_list(memory, "west_sentiment_watchlist", DEFAULT_WEST_SENTIMENT_WATCHLIST):
         add_row(
             item.get("name", ""),
             item.get("last_known_mood", "neutral"),
@@ -1539,11 +1774,11 @@ def collect_btc_sentiment_influencers():
         )
 
     # WEST: media / analytics / macro sources
-    for name in memory.get("west_monitoring_sources", []):
+    for name in get_memory_list(memory, "west_monitoring_sources", DEFAULT_WEST_MONITORING_SOURCES):
         add_row(name, "unknown", "WEST", "media")
 
     # Legacy WEST list support
-    for name in memory.get("west_bloggers", []):
+    for name in get_memory_list(memory, "west_bloggers", DEFAULT_WEST_BLOGGERS):
         add_row(name, "unknown", "WEST", "source")
 
     return rows
@@ -1742,7 +1977,7 @@ def build_blogger_mood_report(classified_rows):
 
 def build_blogger_takeaway(red_count, green_count, yellow_count, total):
     if total == 0:
-        return "🎬 Вывод: список пуст."
+        return "🎬 Вывод: список источников пуст или не загрузился. Проверь memory.json или обнови agent.py на v29 с резервными списками."
 
     red_share = red_count / total
     green_share = green_count / total
@@ -2065,7 +2300,7 @@ def get_ru_competitor_watchlist():
     memory = load_memory()
     names = []
 
-    for item in memory.get("ru_cis_sentiment_watchlist", []):
+    for item in get_memory_list(memory, "ru_cis_sentiment_watchlist", DEFAULT_RU_CIS_SENTIMENT_WATCHLIST):
         if isinstance(item, dict):
             name = item.get("name", "")
         else:
@@ -2074,11 +2309,11 @@ def get_ru_competitor_watchlist():
         if name and name not in names:
             names.append(name)
 
-    for name in memory.get("ru_cis_bloggers", []):
+    for name in get_memory_list(memory, "ru_cis_bloggers", DEFAULT_RU_CIS_BLOGGERS):
         if name and name not in names:
             names.append(name)
 
-    for name in memory.get("ru_cis_monitoring_sources", []):
+    for name in get_memory_list(memory, "ru_cis_monitoring_sources", DEFAULT_RU_CIS_MONITORING_SOURCES):
         if name and name not in names:
             names.append(name)
 
@@ -2233,8 +2468,8 @@ async def monitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def competitors(update: Update, context: ContextTypes.DEFAULT_TYPE):
     memory = load_memory()
-    ru = memory.get("ru_cis_bloggers", [])
-    west = memory.get("west_bloggers", [])
+    ru = get_memory_list(memory, "ru_cis_bloggers", DEFAULT_RU_CIS_BLOGGERS)
+    west = get_memory_list(memory, "west_bloggers", DEFAULT_WEST_BLOGGERS)
 
     results_ru = []
     results_west = []
@@ -2984,7 +3219,7 @@ def build_watchlist_status():
         f"Smart monitor min score: {memory.get('smart_monitor_min_score', 12)}",
         f"Max alerts/day: {memory.get('smart_monitor_max_alerts_per_day', 2)}",
         "",
-        "Рекомендация: для 10/10 добавь в memory.json списки ru_cis_sentiment_watchlist и west_sentiment_watchlist с ключевыми трейдерами/аналитиками."
+        "Если здесь 0 — бот читает старый/пустой memory.json. В v29 есть резервный список прямо в коде, но лучше также заменить memory.json на v16."
     ]
     return "\n".join(lines)
 
