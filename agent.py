@@ -62,7 +62,6 @@ COMPETITOR_VIDEO_DB_FILE = "competitor_video_db.json"
 LOG_FILE = "agent_runtime.log"
 NEWS_CANDIDATES_FILE = "news_candidates.json"
 POST_DRAFTS_FILE = "post_drafts.json"
-POST_STYLE_FILE = "post_style.json"
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -882,19 +881,16 @@ def save_json(path, data):
 
 
 
-def read_post_style_file():
-    if not os.path.exists(POST_STYLE_FILE):
-        return {"status": "missing", "data": None, "error": ""}
-    try:
-        with open(POST_STYLE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except json.JSONDecodeError as e:
-        return {"status": "corrupt", "data": None, "error": str(e)}
-    except Exception as e:
-        return {"status": "error", "data": None, "error": str(e)}
+def read_post_style_from_memory():
+    memory = load_memory()
+    if not isinstance(memory, dict):
+        return {"status": "missing", "data": None, "error": "memory.json root value is not an object"}
 
+    data = memory.get("post_style")
+    if data is None:
+        return {"status": "missing", "data": None, "error": ""}
     if not isinstance(data, dict):
-        return {"status": "corrupt", "data": None, "error": "root JSON value is not an object"}
+        return {"status": "corrupt", "data": None, "error": "memory.post_style is not an object"}
     return {"status": "ok", "data": data, "error": ""}
 
 
@@ -906,7 +902,7 @@ def get_post_style_profile_from_data(data):
 
 
 def load_post_style_profile():
-    result = read_post_style_file()
+    result = read_post_style_from_memory()
     if result.get("status") != "ok":
         return {}
     return get_post_style_profile_from_data(result.get("data"))
@@ -919,17 +915,21 @@ def save_post_style_profile(profile, examples_count=0):
         "examples_count": int(examples_count or 0),
         "style_profile": profile
     }
-    save_json(POST_STYLE_FILE, payload)
+    memory = load_memory()
+    if not isinstance(memory, dict):
+        memory = {}
+    memory["post_style"] = payload
+    save_memory(memory)
     return payload
 
 
 def format_post_style_profile_for_prompt():
-    result = read_post_style_file()
+    result = read_post_style_from_memory()
     status = result.get("status")
     if status == "missing":
         return "стиль не загружен"
     if status != "ok":
-        return "файл стиля повреждён, повтори /learn_style"
+        return "стиль в memory.json повреждён, повтори /learn_style"
     profile = get_post_style_profile_from_data(result.get("data"))
     if not profile:
         return "стиль не загружен"
@@ -1131,7 +1131,7 @@ def generate_telegram_post_draft(candidate, rewrite_text=False, rewrite_image=Fa
 Стиль и обязательный формат:
 {HIFITRADE_POST_STYLE}
 
-Пользовательский style_profile из post_style.json. Используй его вместе с HIFITRADE_POST_STYLE; если есть конфликт, не нарушай запреты и обязательный источник из HIFITRADE_POST_STYLE:
+Пользовательский style_profile из memory.json в ключе post_style. Используй его вместе с HIFITRADE_POST_STYLE; если есть конфликт, не нарушай запреты и обязательный источник из HIFITRADE_POST_STYLE:
 {format_post_style_profile_for_prompt()}
 
 Источник для строки в конце поста: {source_url}
@@ -3106,36 +3106,21 @@ async def learn_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
 
     payload = save_post_style_profile(profile, examples_count=len(examples))
-    saved = read_post_style_file()
-    saved_data = saved.get("data") if saved.get("status") == "ok" else {}
+    saved_memory = load_memory()
+    saved_data = saved_memory.get("post_style") if isinstance(saved_memory, dict) else {}
     saved_profile = get_post_style_profile_from_data(saved_data)
     if (
-        saved.get("status") != "ok"
+        not isinstance(saved_data, dict)
         or not saved_profile
         or int(saved_data.get("examples_count", 0) or 0) != len(examples)
     ):
-        await safe_reply(update, "Не удалось сохранить стиль в post_style.json. Повтори /learn_style.")
+        await safe_reply(update, "Не удалось сохранить стиль в memory.json. Повтори /learn_style.")
         return
 
     await safe_reply(update, f"Стиль загружен. Примеров: {payload.get('examples_count')}")
 
 
-async def style_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    result = read_post_style_file()
-    if result.get("status") == "missing":
-        await safe_reply(update, "стиль не загружен")
-        return
-    if result.get("status") != "ok":
-        await safe_reply(update, "файл стиля повреждён, повтори /learn_style")
-        return
-
-    data = result.get("data") or {}
-    profile = get_post_style_profile_from_data(data)
-    loaded = bool(profile)
-    if not loaded:
-        await safe_reply(update, "стиль не загружен")
-        return
-
+def summarize_post_style_profile(profile):
     description_parts = []
     for key in ("tone", "post_length", "formatting", "conclusion_style"):
         value = profile.get(key)
@@ -3145,14 +3130,39 @@ async def style_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rules = profile.get("generation_rules")
         if isinstance(rules, list):
             description_parts = [str(item).strip() for item in rules[:3] if str(item).strip()]
-    description = "; ".join(description_parts) or "описание не найдено"
+    return "; ".join(description_parts) or "описание не найдено"
+
+
+async def style_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    memory = load_memory()
+    data = memory.get("post_style") if isinstance(memory, dict) else None
+    profile = get_post_style_profile_from_data(data)
+    if not profile:
+        await safe_reply(update, "Стиль не загружен.")
+        return
 
     await safe_reply(
         update,
-        "стиль загружен: да\n"
-        f"количество примеров: {data.get('examples_count', '—')}\n"
-        f"дата последнего обучения: {data.get('updated_at', '—')}\n"
-        f"краткое описание стиля: {description}"
+        "Стиль загружен: да\n"
+        f"Примеров: {data.get('examples_count', '—')}\n"
+        f"Дата обучения: {data.get('updated_at', '—')}\n"
+        f"Краткий профиль: {summarize_post_style_profile(profile)}"
+    )
+
+
+async def debug_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    memory = load_memory()
+    post_style = memory.get("post_style") if isinstance(memory, dict) else None
+    has_post_style = isinstance(memory, dict) and "post_style" in memory
+    post_style_keys = sorted(post_style.keys()) if isinstance(post_style, dict) else []
+
+    await safe_reply(
+        update,
+        "Debug style\n"
+        f"post_style в memory.json: {'да' if has_post_style else 'нет'}\n"
+        f"Ключи внутри post_style: {', '.join(post_style_keys) if post_style_keys else '—'}\n"
+        f"examples_count: {post_style.get('examples_count', '—') if isinstance(post_style, dict) else '—'}\n"
+        f"updated_at: {post_style.get('updated_at', '—') if isinstance(post_style, dict) else '—'}"
     )
 
 
@@ -3168,6 +3178,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/post_queue — pending-черновики\n"
         "/learn_style — изучить стиль Telegram-постов\n"
         "/style_status — статус загруженного стиля\n"
+        "/debug_style — диагностика стиля в memory.json\n"
         "/bloggers_now — настроение RU/CIS блогеров\n"
         "/videoidea — идея большого ролика\n"
         "/shortidea — идея Shorts\n"
@@ -3269,16 +3280,9 @@ async def pick_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(update, "Эта новость помечена как неподходящая для поста.")
         return
 
-    style_result = read_post_style_file()
-    if style_result.get("status") == "missing":
-        await safe_reply(update, "стиль не загружен")
-        return
-    if style_result.get("status") != "ok":
-        await safe_reply(update, "файл стиля повреждён, повтори /learn_style")
-        return
-    if not get_post_style_profile_from_data(style_result.get("data")):
-        await safe_reply(update, "стиль не загружен")
-        return
+    style_profile = load_post_style_profile()
+    if not style_profile:
+        await safe_reply(update, "Стиль не загружен, пост будет написан по базовым правилам HiFi Trade.")
 
     source_url = get_candidate_source_url(candidate)
     if not is_valid_source_url(source_url):
@@ -5738,6 +5742,7 @@ def main():
     app.add_handler(CommandHandler("post_queue", restricted(post_queue)))
     app.add_handler(CommandHandler("learn_style", restricted(learn_style)))
     app.add_handler(CommandHandler("style_status", restricted(style_status)))
+    app.add_handler(CommandHandler("debug_style", restricted(debug_style)))
     app.add_handler(CommandHandler("bloggers_now", restricted(bloggers_now)))
     app.add_handler(CommandHandler("videoidea", restricted(videoidea)))
     app.add_handler(CommandHandler("shortidea", restricted(shortidea)))
