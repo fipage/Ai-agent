@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import csv
 from io import StringIO
@@ -1849,8 +1850,7 @@ def ask_ai(prompt, max_chars=3500):
 async def send_long(context, chat_id, text):
     if not text:
         text = "Пустой ответ."
-    for i in range(0, len(text), 3500):
-        await context.bot.send_message(chat_id=chat_id, text=text[i:i+3500])
+    await send_chunked_to_chat(context, chat_id, text)
 
 
 async def safe_reply(update: Update, text: str = "", max_len: int = 2500, header: str = None, **kwargs):
@@ -1865,8 +1865,7 @@ async def safe_send(app, chat_id, text: str = "", max_len: int = 2500, header: s
 async def reply_long(update, text):
     if not text:
         text = "Пустой ответ."
-    for i in range(0, len(text), 3500):
-        await safe_reply(update, text[i:i+3500])
+    await safe_reply(update, text)
 
 
 
