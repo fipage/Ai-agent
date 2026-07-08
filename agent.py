@@ -11,6 +11,7 @@ import concurrent.futures
 import logging
 import hashlib
 import tempfile
+from html import escape
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from openai import OpenAI
@@ -1125,12 +1126,62 @@ def ensure_source_in_post(post_text, source_url):
     return f"{post_text}\n\nИсточник: {source_url}".strip()
 
 
+TELEGRAM_HTML_TAG_RE = re.compile(r"</?(?:b|i|u|s|code|pre)\s*/?>|<a\s+href=(?:\"[^\"]*\"|'[^']*')\s*>|</a>", re.IGNORECASE)
+TELEGRAM_CAPTION_LIMIT = 1024
+
+
+def sanitize_telegram_html(html_text):
+    html_text = str(html_text or "").strip()
+    if not html_text:
+        return ""
+
+    result = []
+    position = 0
+    for match in TELEGRAM_HTML_TAG_RE.finditer(html_text):
+        result.append(escape(html_text[position:match.start()], quote=False))
+        tag = match.group(0)
+        href_match = re.match(r"<a\s+href=(?:\"([^\"]*)\"|'([^']*)')\s*>", tag, flags=re.IGNORECASE)
+        if href_match:
+            href = escape((href_match.group(1) or href_match.group(2) or "").strip(), quote=True)
+            result.append(f'<a href="{href}">')
+        else:
+            result.append(tag.lower())
+        position = match.end()
+    result.append(escape(html_text[position:], quote=False))
+    return "".join(result).strip()
+
+
+def ensure_source_in_post_html(post_text_html, source_url):
+    post_text_html = sanitize_telegram_html(post_text_html)
+    source_url = str(source_url or "").strip()
+    post_text_html = re.sub(r"\n*Источник:\s*(?:<a\s+href=\"[^\"]*\">.*?</a>|\S+)\s*$", "", post_text_html, flags=re.IGNORECASE | re.DOTALL).strip()
+    return f"{post_text_html}\n\nИсточник: {escape(source_url, quote=False)}".strip()
+
+
+def fallback_post_text_to_html(post_text):
+    lines = escape(str(post_text or "").strip(), quote=False).splitlines()
+    if lines and lines[0].strip():
+        lines[0] = f"<b>{lines[0].strip()}</b>"
+    html_text = "\n".join(lines)
+    html_text = re.sub(r"(?im)^(\s*)Что важно:(\s*)$", r"\1<b>Что важно:</b>\2", html_text)
+    html_text = re.sub(r"(?im)^(\s*)Вывод:(\s*)$", r"\1<b>Вывод:</b>\2", html_text)
+    return html_text.strip()
+
+
+def get_draft_post_text_html(draft):
+    source_url = draft.get("source_url") or draft.get("source") or get_candidate_source_url(draft.get("candidate", {}))
+    post_text_html = draft.get("post_text_html")
+    if not post_text_html:
+        post_text_html = fallback_post_text_to_html(draft.get("post_text", ""))
+    return ensure_source_in_post_html(post_text_html, source_url)
+
+
 def format_draft_message(draft):
-    media = "Картинка: сгенерирована" if draft.get("image_path") else f"image_prompt:\n{draft.get('image_prompt', '—')}"
+    media = "Картинка: сгенерирована" if draft.get("image_path") else f"image_prompt:\n{escape(str(draft.get('image_prompt', '—')), quote=False)}"
     return (
-        "📝 Черновик Telegram-поста\n\n"
-        f"{draft.get('post_text', '')}\n\n"
-        f"Hype Score: {draft.get('hype_score', '—')}\n\n"
+        "<b>📝 Черновик Telegram-поста</b>\n\n"
+        f"{get_draft_post_text_html(draft)}\n\n"
+        f"Hype Score: {escape(str(draft.get('hype_score', '—')), quote=False)}\n\n"
         f"{media}\n\n"
         "Публикуем?"
     )
@@ -1167,7 +1218,7 @@ def generate_telegram_post_draft(candidate, rewrite_text=False, rewrite_image=Fa
 
 Нужно вернуть только JSON:
 {{
-  "post_text": "готовый текст Telegram-поста на русском",
+  "post_text_html": "готовый текст Telegram-поста на русском в Telegram-safe HTML",
   "image_prompt": "английский промпт для строгой clean crypto/macro картинки"
 }}
 
@@ -1175,7 +1226,13 @@ def generate_telegram_post_draft(candidate, rewrite_text=False, rewrite_image=Fa
 - без инвестиционных рекомендаций;
 - без обещаний прибыли;
 - без скама, 100x и дешёвого хайпа;
-- 900-1400 знаков;
+- лучше держать пост до 900 знаков;
+- HTML-разметка обязательна: заголовок в <b>...</b>, блок <b>Что важно:</b>, блок <b>Вывод:</b>;
+- при необходимости можно использовать <i>...</i>, но без перебора;
+- источник в конце обычным текстом или ссылкой;
+- используй только Telegram-safe HTML: <b>, <i>, <u>, <s>, <a href="">, <code>, <pre>;
+- не используй неподдерживаемые HTML-теги;
+- экранируй пользовательский и новостной текст, если в нём есть HTML-символы;
 - не используй слова и формулировки: “покупайте”, “продавайте”, “точно будет рост”;
 - пост обязан закончиться ровно строкой: Источник: {source_url}
 - если переписываешь текст, всё равно сохрани этот стиль и источник в конце.
@@ -1199,8 +1256,14 @@ def generate_telegram_post_draft(candidate, rewrite_text=False, rewrite_image=Fa
         }
 
     post_text = ensure_source_in_post(str(parsed.get("post_text") or raw).strip()[:3500], source_url)
+    post_text_html = parsed.get("post_text_html")
+    if post_text_html:
+        post_text_html = ensure_source_in_post_html(str(post_text_html).strip()[:3500], source_url)
+    else:
+        post_text_html = ensure_source_in_post_html(fallback_post_text_to_html(post_text), source_url)
     return {
         "post_text": post_text,
+        "post_text_html": post_text_html,
         "image_prompt": str(parsed.get("image_prompt") or "").strip()[:1200]
     }
 
@@ -3331,6 +3394,7 @@ async def pick_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "created_at": datetime.utcnow().isoformat(),
         "candidate": candidate,
         "post_text": ensure_source_in_post(generated.get("post_text", ""), source_url),
+        "post_text_html": ensure_source_in_post_html(generated.get("post_text_html") or fallback_post_text_to_html(generated.get("post_text", "")), source_url),
         "image_prompt": generated.get("image_prompt", ""),
         "image_path": image_path or "",
         "source": source_url,
@@ -3341,11 +3405,13 @@ async def pick_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = format_draft_message(draft)
     if image_path:
         with open(image_path, "rb") as image:
-            await update.message.reply_photo(photo=image, caption=text[:1024], reply_markup=draft_keyboard(draft_id))
-        if len(text) > 1024:
-            await safe_reply(update, text[1024:])
+            if len(text) <= TELEGRAM_CAPTION_LIMIT:
+                await update.message.reply_photo(photo=image, caption=text, parse_mode="HTML", reply_markup=draft_keyboard(draft_id))
+            else:
+                await update.message.reply_photo(photo=image, reply_markup=draft_keyboard(draft_id))
+                await update.message.reply_text(text, parse_mode="HTML")
     else:
-        await update.message.reply_text(text, reply_markup=draft_keyboard(draft_id))
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=draft_keyboard(draft_id))
 
 
 async def post_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3392,6 +3458,7 @@ async def draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         source_url = draft.get("source_url") or draft.get("source") or get_candidate_source_url(draft.get("candidate", {}))
         if action == "rewrite_text":
             draft["post_text"] = ensure_source_in_post(generated.get("post_text", draft.get("post_text", "")), source_url)
+            draft["post_text_html"] = ensure_source_in_post_html(generated.get("post_text_html") or fallback_post_text_to_html(draft.get("post_text", "")), source_url)
             draft["source"] = source_url
             draft["source_url"] = source_url
         else:
@@ -3399,7 +3466,7 @@ async def draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             draft["image_path"] = try_generate_image(draft.get("image_prompt", ""), draft_id) or ""
         draft["updated_at"] = datetime.utcnow().isoformat()
         upsert_post_draft(draft)
-        await query.edit_message_text(format_draft_message(draft), reply_markup=draft_keyboard(draft_id))
+        await query.edit_message_text(format_draft_message(draft), parse_mode="HTML", reply_markup=draft_keyboard(draft_id))
         return
 
     if action == "publish":
@@ -3408,6 +3475,7 @@ async def draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("У новости нет источника. Публикация запрещена.")
             return
         draft["post_text"] = ensure_source_in_post(draft.get("post_text", ""), source_url)
+        draft["post_text_html"] = get_draft_post_text_html(draft)
         draft["source"] = source_url
         draft["source_url"] = source_url
         channel_id = os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
@@ -3415,12 +3483,15 @@ async def draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("Не задан TELEGRAM_CHANNEL_ID в Railway Variables")
             return
         if draft.get("image_path") and os.path.exists(draft.get("image_path")):
+            post_text_html = draft.get("post_text_html", "")
             with open(draft["image_path"], "rb") as image:
-                await context.bot.send_photo(chat_id=channel_id, photo=image, caption=draft.get("post_text", "")[:1024])
-            if len(draft.get("post_text", "")) > 1024:
-                await context.bot.send_message(chat_id=channel_id, text=draft.get("post_text", "")[1024:])
+                if len(post_text_html) <= TELEGRAM_CAPTION_LIMIT:
+                    await context.bot.send_photo(chat_id=channel_id, photo=image, caption=post_text_html, parse_mode="HTML")
+                else:
+                    await context.bot.send_photo(chat_id=channel_id, photo=image)
+                    await context.bot.send_message(chat_id=channel_id, text=post_text_html, parse_mode="HTML")
         else:
-            await context.bot.send_message(chat_id=channel_id, text=draft.get("post_text", ""))
+            await context.bot.send_message(chat_id=channel_id, text=draft.get("post_text_html", ""), parse_mode="HTML")
         draft["status"] = "published"
         draft["published_at"] = datetime.utcnow().isoformat()
         upsert_post_draft(draft)
