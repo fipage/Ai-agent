@@ -1,344 +1,114 @@
 {
-  "channel_name": "HiFi Trade",
-  "channel_url": "https://www.youtube.com/@hifitrade",
-  "reference_video": "https://youtu.be/sw2q3R1OcZ4?si=uoDbyeqlBYM-HZOG",
-  "language_market": "Russian and CIS crypto/investing audience",
-  "main_goal": "grow YouTube channel by monitoring full crypto socio-economic information field: BTC traders, crypto influencers, RU/CIS media, western macro/crypto sources, audience sentiment and YouTube gaps",
-  "style": "serious, analytical, strict, clean, no hype, no scam, no memecoins",
-  "forbidden_topics": [
-    "meme coins",
-    "shitcoins",
-    "scam coins",
-    "low-cap garbage",
-    "random pumps",
-    "100x coins",
-    "buy now hype",
-    "useless exchange listings",
-    "panic without data"
-  ],
-  "preferred_topics": [
-    "Bitcoin",
-    "Ethereum",
-    "ETF flows",
-    "liquidity",
-    "macro",
-    "Fed",
-    "DXY",
-    "bond market",
-    "risk management",
-    "market psychology",
-    "Bitcoin dominance",
-    "stablecoin liquidity",
-    "regulation",
-    "institutional adoption",
-    "investor behavior",
-    "sentiment mismatch",
-    "crowd positioning",
-    "contrarian narratives",
-    "blogger consensus",
-    "market expectations",
-    "global vs RU/CIS sentiment gap"
-  ],
-  "ru_cis_sentiment_watchlist": [
-    {
-      "name": "InvTrading",
-      "last_known_mood": "unknown",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "MrMozart",
-      "last_known_mood": "unknown",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "PifagorTrade",
-      "last_known_mood": "unknown",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "Рафаэль Слезы Сатоши",
-      "last_known_mood": "unknown",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "Юра Франциско",
-      "last_known_mood": "unknown",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "IKIGAI",
-      "last_known_mood": "unknown",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "Биткоин Адепт",
-      "last_known_mood": "unknown",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "Разумный Инвестор",
-      "last_known_mood": "unknown",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "Cryptus",
-      "last_known_mood": "unknown",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "Богдан Где Иксы",
-      "last_known_mood": "unknown",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "Факич",
-      "last_known_mood": "unknown",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "Ридван",
-      "last_known_mood": "unknown",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "HAMAHA",
-      "last_known_mood": "unknown",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    }
-  ],
-  "ru_cis_monitoring_sources": [
-    "Крипто Патруль",
-    "РБК Крипто",
-    "ForkLog",
-    "Bits.media",
-    "Crypto Family",
-    "Pro Blockchain",
-    "CRYPTUS",
-    "Крипто Журнал",
-    "Биткоин База",
-    "Roman Nekrasov",
-    "Happy Coin News",
-    "MarsDAO",
-    "Bitkogan",
-    "InvestFuture",
-    "Смартлаб",
-    "Тимофей Мартынов"
-  ],
-  "west_sentiment_watchlist": [
-    {
-      "name": "Benjamin Cowen",
-      "last_known_mood": "unknown",
-      "category": "macro crypto cycles / BTC dominance",
-      "notes": "track for cautious or risk-off/risk-on tone",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "InvestAnswers",
-      "last_known_mood": "unknown",
-      "category": "BTC / macro / portfolio analysis",
-      "notes": "track BTC, macro and asset allocation tone",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "DataDash",
-      "last_known_mood": "unknown",
-      "category": "crypto markets / macro",
-      "notes": "track risk-on/risk-off analysis",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "Into The Cryptoverse",
-      "last_known_mood": "unknown",
-      "category": "crypto cycles / BTC dominance",
-      "notes": "same ecosystem as Benjamin Cowen",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "Crypto Banter",
-      "last_known_mood": "unknown",
-      "category": "crypto market show",
-      "notes": "track retail sentiment, filter hype",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "Altcoin Daily",
-      "last_known_mood": "unknown",
-      "category": "crypto news / market sentiment",
-      "notes": "track retail crypto sentiment",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "The Modern Investor",
-      "last_known_mood": "unknown",
-      "category": "crypto news",
-      "notes": "track broad crypto news sentiment",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "Anthony Pompliano",
-      "last_known_mood": "unknown",
-      "category": "Bitcoin / macro / investing",
-      "notes": "track Bitcoin institutional narrative",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "Michael Saylor",
-      "last_known_mood": "unknown",
-      "category": "Bitcoin institutional bull",
-      "notes": "use as structural BTC bullish baseline, not short-term trading signal",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    },
-    {
-      "name": "Raoul Pal",
-      "last_known_mood": "unknown",
-      "category": "macro / liquidity / crypto cycles",
-      "notes": "track global liquidity and cycle framing",
-      "mood_source": "old baseline only; must be rechecked from fresh content",
-      "mood_last_checked": ""
-    }
-  ],
-  "west_monitoring_sources": [
-    "Coin Bureau",
-    "Bankless",
-    "Real Vision",
-    "Glassnode",
-    "ARK Invest",
-    "Blockworks Macro",
-    "The Defiant",
-    "Unchained",
-    "What Bitcoin Did",
-    "CoinDesk",
-    "Cointelegraph"
-  ],
-  "ru_cis_bloggers": [
-    "InvTrading",
-    "MrMozart",
-    "PifagorTrade",
-    "Рафаэль Слезы Сатоши",
-    "Юра Франциско",
-    "IKIGAI",
-    "Биткоин Адепт",
-    "Разумный Инвестор",
-    "Cryptus",
-    "Богдан Где Иксы",
-    "Факич",
-    "Ридван",
-    "HAMAHA",
-    "Крипто Патруль",
-    "РБК Крипто",
-    "ForkLog",
-    "Bits.media",
-    "Crypto Family",
-    "Pro Blockchain",
-    "Крипто Журнал",
-    "Биткоин База"
-  ],
-  "west_bloggers": [
-    "Benjamin Cowen",
-    "InvestAnswers",
-    "DataDash",
-    "Into The Cryptoverse",
-    "Crypto Banter",
-    "Altcoin Daily",
-    "The Modern Investor",
-    "Anthony Pompliano",
-    "Michael Saylor",
-    "Raoul Pal",
-    "Coin Bureau",
-    "Bankless",
-    "Real Vision",
-    "Glassnode",
-    "Blockworks Macro"
-  ],
-  "content_strategy_rules": [
-    "Blogger/socio report must be cheap and readable.",
-    "Report must show only colored circle and channel/source name.",
-    "Report must not call OpenAI unless user explicitly asks for deeper explanation.",
-    "Include both directional BTC/crypto influencers and broader information sources to understand socioeconomics.",
-    "Use 🔴/🟢 only when a source has known directional market bias.",
-    "Use 🟡 for media, macro sources, analytics and unclear/neutral sources.",
-    "Monitoring sources help understand the whole information field; they are not trading signals.",
-    "If most directional influencers are bearish while broad media is neutral, suggest contrarian content.",
-    "Always separate blogger mood from real market structure.",
-    "Use consensus as content opportunity, not as trading advice.",
-    "Prioritize serious narratives over coin hype.",
-    "Every video idea must include title, hook, script structure and 3 clean thumbnail concepts.",
-    "Every Shorts idea must include first phrase, script and thumbnail text.",
-    "Do not recommend scam-like, low-cap, memecoin or pump content.",
-    "Agent must automatically create weekly content plan every Sunday.",
-    "Agent must proactively send only ideas rated 8/10 or higher.",
-    "Agent must use memory to avoid repeating topics it already suggested.",
-    "Agent should stay concise and avoid extra explanations.",
-    "Memory is not a permanent ban on topics.",
-    "Do not repeat the same idea within 14 days.",
-    "After 14 days, a topic can return only with a clear new angle or new news hook.",
-    "After 30 days, evergreen topics such as BTC, ETF flows, liquidity, Fed, ETH, Bitcoin dominance and macro can return with updated framing.",
-    "If a topic is still highly demanded, do not discard it forever; reframe it.",
-    "Smart monitoring should not spam.",
-    "Smart monitoring uses cheap checks first and OpenAI only for strong new events.",
-    "Send alert only if topic is 8/10+ and useful for Telegram/Shorts/YouTube.",
-    "Do not send repeated alerts for the same topic.",
-    "Do not treat last_known_mood as current truth.",
-    "last_known_mood is only an old baseline note.",
-    "For blogger mood reports, determine actual mood from fresh content and recent titles.",
-    "If fresh content is insufficient, mark the source as 🟡 unknown/neutral.",
-    "Never claim a blogger is currently bullish or bearish based only on old memory.",
-    "Mood report should be honest: fresh signal first, memory only as context."
-  ],
+  "telegram_chat_id": "",
   "report_timezone": "Europe/Moscow",
   "daily_news_time": "09:00",
-  "weekly_blogger_mood_day": "Sunday",
-  "weekly_blogger_mood_time": "10:00",
-  "video_idea_day": "Friday",
-  "video_idea_time": "12:00",
-  "shorts_idea_days": [
-    "Monday",
-    "Thursday"
-  ],
-  "shorts_idea_time": "12:00",
-  "telegram_chat_id": "",
+  "smart_monitor_enabled": true,
+  "smart_monitor_interval_minutes": 120,
+  "smart_monitor_min_score": 12,
+  "smart_monitor_max_alerts_per_day": 2,
   "weekly_content_plan_day": "Sunday",
   "weekly_content_plan_time": "11:00",
-  "memory_repeat_policy": {
-    "hot_cooldown_days": 14,
-    "warm_cooldown_days": 30,
-    "rule": "Recent ideas are paused, not banned forever. Evergreen topics may return with a new angle."
-  },
-  "smart_monitor_enabled": true,
-  "smart_monitor_interval_minutes": 30,
-  "smart_monitor_min_score": 7,
-  "smart_monitor_rule": "Cheap check every 30 minutes; OpenAI only if new strong event appears.",
   "ahead_competitors_days": [
     "Wednesday"
   ],
   "ahead_competitors_time": "12:00",
+  "shorts_days": [
+    "Monday",
+    "Thursday"
+  ],
+  "shorts_time": "12:00",
+  "videoidea_day": "Friday",
+  "videoidea_time": "12:00",
+  "bloggers_mood_day": "Sunday",
+  "bloggers_mood_time": "10:00",
+  "last_known_mood": "unknown",
   "sent_keys": [],
-  "sentiment_policy": {
-    "last_known_mood_meaning": "old baseline only, not current fact",
-    "current_mood_rule": "must be inferred from fresh content, recent titles or current monitoring",
-    "fallback": "if not enough fresh evidence, mark as unknown/neutral",
-    "telegram_display": "show colored circle + channel name only; use 🟡 when current mood is unclear"
+  "used_ideas": [],
+  "weekly_notes": [],
+  "conversation_history": {},
+  "search_demand_queries": {
+    "ru": [
+      "биткоин прогноз",
+      "bitcoin прогноз",
+      "биткоин сегодня",
+      "почему биткоин падает",
+      "почему биткоин растет",
+      "биткоин не падает",
+      "альткоины когда рост",
+      "эфириум прогноз",
+      "ETF биткоин",
+      "криптовалюта новости сегодня",
+      "что будет с биткоином",
+      "доминирование биткоина",
+      "страх и жадность крипто"
+    ],
+    "en": [
+      "bitcoin price prediction",
+      "why bitcoin is not falling",
+      "bitcoin today",
+      "bitcoin ETF flows",
+      "ethereum price prediction",
+      "crypto market today",
+      "altcoin season",
+      "bitcoin dominance",
+      "crypto fear and greed index"
+    ]
+  },
+  "output_language_policy": {
+    "final_language": "Russian",
+    "keep_english_only_for": [
+      "BTC",
+      "ETH",
+      "ETF",
+      "Fed",
+      "DXY",
+      "BlackRock",
+      "JPMorgan",
+      "YouTube",
+      "Shorts",
+      "Binance",
+      "Coinbase"
+    ],
+    "rule": "Агент должен писать финальные ответы, заголовки, хуки и превью на русском языке. Английские источники использовать только для анализа."
+  },
+  "content_quality_policy": {
+    "main_rule": "Понятно + глубоко, а не пусто + эмоция.",
+    "required_for_video": [
+      "главный тезис",
+      "2-3 причины",
+      "данные/графики для экрана",
+      "источники",
+      "контраргумент",
+      "вывод для зрителя"
+    ],
+    "forbidden": [
+      "пустые ролики без данных",
+      "интрига без аналитики",
+      "рынок странный без объяснения",
+      "BTC улетит без аргументов",
+      "мемкоины",
+      "100x",
+      "airdrops",
+      "presale"
+    ]
+  },
+  "viewer_language_policy": {
+    "default_viewer": "новичок в крипте/инвестициях",
+    "rule": "Если зритель не поймет заголовок за 1 секунду, агент обязан переписать проще.",
+    "bad_phrases_for_title_preview": [
+      "защитный актив",
+      "safe haven",
+      "макроликвидность",
+      "институционалы",
+      "ETF flows",
+      "дивергенция",
+      "риск-актив"
+    ],
+    "good_framings": [
+      "Почему Bitcoin не падает?",
+      "Все ждут падение BTC. Но рынок держится",
+      "Bitcoin должен был упасть. Что происходит?",
+      "BTC не падает — это сила или ловушка?"
+    ]
   }
 }
