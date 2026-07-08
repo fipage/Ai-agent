@@ -2038,6 +2038,35 @@ def yt_learn_from_analytics(days=28, max_results=15):
 
 
 
+
+async def env_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    checks = {
+        "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
+        "TELEGRAM_BOT_TOKEN": os.getenv("TELEGRAM_BOT_TOKEN"),
+        "YOUTUBE_API_KEY": os.getenv("YOUTUBE_API_KEY"),
+        "YOUTUBE_CLIENT_ID": os.getenv("YOUTUBE_CLIENT_ID"),
+        "YOUTUBE_CLIENT_SECRET": os.getenv("YOUTUBE_CLIENT_SECRET"),
+        "YOUTUBE_REFRESH_TOKEN": os.getenv("YOUTUBE_REFRESH_TOKEN"),
+        "ALLOWED_USER_IDS": os.getenv("ALLOWED_USER_IDS"),
+    }
+
+    lines = ["🔍 Railway env check", ""]
+
+    for key, value in checks.items():
+        if value and str(value).strip():
+            safe_len = len(str(value).strip())
+            lines.append(f"✅ {key}: есть, длина {safe_len}")
+        else:
+            lines.append(f"❌ {key}: не найдено")
+
+    lines.append("")
+    lines.append("Если YOUTUBE_CLIENT_ID / YOUTUBE_CLIENT_SECRET / YOUTUBE_REFRESH_TOKEN тут ❌, значит переменные добавлены не туда или деплой их не подхватил.")
+    lines.append("Если тут ✅, но /yt_auth_check падает — проблема уже не в Railway variables, а в OAuth-токене/доступах Google.")
+
+    await update.message.reply_text("\n".join(lines))
+
+
+
 async def yt_auth_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     token, err = get_youtube_oauth_access_token()
     if err:
@@ -4151,6 +4180,7 @@ def main():
 
     app.add_handler(CommandHandler("start", restricted(start)))
     app.add_handler(CommandHandler("health", restricted(health)))
+    app.add_handler(CommandHandler("env_check", restricted(env_check)))
     app.add_handler(CommandHandler("yt_auth_check", restricted(yt_auth_check)))
     app.add_handler(CommandHandler("yt_recent", restricted(yt_recent)))
     app.add_handler(CommandHandler("yt_analytics", restricted(yt_analytics)))
