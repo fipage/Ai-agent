@@ -925,11 +925,14 @@ def save_post_style_profile(profile, examples_count=0):
 
 def format_post_style_profile_for_prompt():
     result = read_post_style_file()
-    if result.get("status") != "ok":
-        return "Пользовательский style_profile не загружен. Используй только базовый HIFITRADE_POST_STYLE."
+    status = result.get("status")
+    if status == "missing":
+        return "стиль не загружен"
+    if status != "ok":
+        return "файл стиля повреждён, повтори /learn_style"
     profile = get_post_style_profile_from_data(result.get("data"))
     if not profile:
-        return "Пользовательский style_profile не загружен. Используй только базовый HIFITRADE_POST_STYLE."
+        return "стиль не загружен"
     return json.dumps(profile, ensure_ascii=False, indent=2)
 
 
@@ -3120,17 +3123,17 @@ async def learn_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def style_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = read_post_style_file()
     if result.get("status") == "missing":
-        await safe_reply(update, "Стиль не загружен")
+        await safe_reply(update, "стиль не загружен")
         return
     if result.get("status") != "ok":
-        await safe_reply(update, "Файл стиля повреждён. Повтори /learn_style")
+        await safe_reply(update, "файл стиля повреждён, повтори /learn_style")
         return
 
     data = result.get("data") or {}
     profile = get_post_style_profile_from_data(data)
     loaded = bool(profile)
     if not loaded:
-        await safe_reply(update, "Стиль не загружен")
+        await safe_reply(update, "стиль не загружен")
         return
 
     description_parts = []
@@ -3265,6 +3268,18 @@ async def pick_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not candidate.get("can_make_post", True):
         await safe_reply(update, "Эта новость помечена как неподходящая для поста.")
         return
+
+    style_result = read_post_style_file()
+    if style_result.get("status") == "missing":
+        await safe_reply(update, "стиль не загружен")
+        return
+    if style_result.get("status") != "ok":
+        await safe_reply(update, "файл стиля повреждён, повтори /learn_style")
+        return
+    if not get_post_style_profile_from_data(style_result.get("data")):
+        await safe_reply(update, "стиль не загружен")
+        return
+
     source_url = get_candidate_source_url(candidate)
     if not is_valid_source_url(source_url):
         await safe_reply(update, "У новости нет источника. Публикация запрещена.")
