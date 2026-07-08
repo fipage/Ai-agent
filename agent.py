@@ -62,6 +62,7 @@ COMPETITOR_VIDEO_DB_FILE = "competitor_video_db.json"
 LOG_FILE = "agent_runtime.log"
 NEWS_CANDIDATES_FILE = "news_candidates.json"
 POST_DRAFTS_FILE = "post_drafts.json"
+POST_STYLE_FILE = "post_style.json"
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -880,6 +881,42 @@ def save_json(path, data):
                 pass
 
 
+
+def load_post_style_profile():
+    data = load_json(POST_STYLE_FILE, {})
+    if not isinstance(data, dict):
+        return {}
+    profile = data.get("style_profile", data)
+    return profile if isinstance(profile, dict) else {}
+
+
+def save_post_style_profile(profile, examples_count=0):
+    profile = profile if isinstance(profile, dict) else {}
+    payload = {
+        "updated_at": datetime.utcnow().isoformat(),
+        "examples_count": int(examples_count or 0),
+        "style_profile": profile
+    }
+    save_json(POST_STYLE_FILE, payload)
+    return payload
+
+
+def format_post_style_profile_for_prompt():
+    profile = load_post_style_profile()
+    if not profile:
+        return "Пользовательский style_profile не загружен. Используй только базовый HIFITRADE_POST_STYLE."
+    return json.dumps(profile, ensure_ascii=False, indent=2)
+
+
+def split_style_examples(text):
+    text = str(text or "").strip()
+    if not text:
+        return []
+    parts = [p.strip() for p in re.split(r"\n\s*(?:---+|#{3,}|\*\*\*)\s*\n", text) if p.strip()]
+    if len(parts) == 1:
+        parts = [p.strip() for p in re.split(r"\n\s*\n(?=.{80,})", text) if p.strip()]
+    return parts
+
 def load_news_candidates():
     data = load_json(NEWS_CANDIDATES_FILE, {"updated_at": "", "items": []})
     if isinstance(data, list):
@@ -1065,6 +1102,9 @@ def generate_telegram_post_draft(candidate, rewrite_text=False, rewrite_image=Fa
 
 Стиль и обязательный формат:
 {HIFITRADE_POST_STYLE}
+
+Пользовательский style_profile из post_style.json. Используй его вместе с HIFITRADE_POST_STYLE; если есть конфликт, не нарушай запреты и обязательный источник из HIFITRADE_POST_STYLE:
+{format_post_style_profile_for_prompt()}
 
 Источник для строки в конце поста: {source_url}
 
@@ -2985,6 +3025,79 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+async def learn_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message_text = update.message.text if update and update.message else ""
+    examples_text = re.sub(r"^/learn_style(?:@\w+)?\s*", "", message_text or "", flags=re.IGNORECASE).strip()
+    examples = split_style_examples(examples_text)
+
+    if len(examples) < 3 or len(examples) > 10:
+        await safe_reply(
+            update,
+            "Пришли /learn_style и ниже вставь 3–10 примеров своих Telegram-постов. "
+            "Разделять можно пустой строкой или строкой --- . Сейчас распознано примеров: "
+            f"{len(examples)}."
+        )
+        return
+
+    prompt = f"""
+Проанализируй стиль автора по 3–10 примерам Telegram-постов и верни только валидный JSON без markdown.
+
+Нужно заполнить style_profile:
+{{
+  "post_length": "типичная длина и диапазон",
+  "tone": "тон автора",
+  "formatting": "оформление абзацев, заголовков, эмодзи, акцентов",
+  "frequent_phrases": ["частая формулировка"],
+  "conclusion_style": "как автор делает выводы",
+  "list_style": "как автор оформляет списки",
+  "avoid_words": ["слова/формулировки, которые лучше не использовать"],
+  "generation_rules": ["практичные правила для будущей генерации постов"]
+}}
+
+Примеры:
+{json.dumps(examples, ensure_ascii=False, indent=2)}
+"""
+
+    raw = ask_ai(prompt, max_chars=3500)
+    try:
+        cleaned = raw.strip().replace("```json", "").replace("```", "").strip()
+        parsed = json.loads(cleaned)
+        profile = parsed.get("style_profile", parsed) if isinstance(parsed, dict) else {}
+    except Exception:
+        profile = {
+            "raw_analysis": raw.strip(),
+            "generation_rules": ["Следовать сохранённому текстовому анализу стиля автора."]
+        }
+
+    payload = save_post_style_profile(profile, examples_count=len(examples))
+    await safe_reply(
+        update,
+        "✅ Стиль изучен и сохранён в post_style.json.\n"
+        f"Примеров: {payload.get('examples_count')}\n"
+        f"Обновлено: {payload.get('updated_at')}\n\n"
+        "Теперь черновики постов будут учитывать post_style.json + HIFITRADE_POST_STYLE."
+    )
+
+
+async def style_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_json(POST_STYLE_FILE, {})
+    profile = data.get("style_profile") if isinstance(data, dict) else None
+    loaded = isinstance(profile, dict) and bool(profile)
+    if not loaded:
+        await safe_reply(update, "Стиль не загружен. Отправь /learn_style и 3–10 примеров постов.")
+        return
+
+    keys = ", ".join(list(profile.keys())[:8])
+    await safe_reply(
+        update,
+        "✅ Стиль загружен.\n"
+        f"Файл: {POST_STYLE_FILE}\n"
+        f"Примеров: {data.get('examples_count', '—')}\n"
+        f"Обновлено: {data.get('updated_at', '—')}\n"
+        f"Поля профиля: {keys or '—'}"
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await safe_reply(update, 
         "HiFi Trade AI Growth Team запущен ✅\n\n"
@@ -2995,6 +3108,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/news_candidates — последний список новостей\n"
         "/pick_news 1 — подготовить черновик поста по новости\n"
         "/post_queue — pending-черновики\n"
+        "/learn_style — изучить стиль Telegram-постов\n"
+        "/style_status — статус загруженного стиля\n"
         "/bloggers_now — настроение RU/CIS блогеров\n"
         "/videoidea — идея большого ролика\n"
         "/shortidea — идея Shorts\n"
@@ -5551,6 +5666,8 @@ def main():
     app.add_handler(CommandHandler("news_candidates", restricted(news_candidates)))
     app.add_handler(CommandHandler("pick_news", restricted(pick_news)))
     app.add_handler(CommandHandler("post_queue", restricted(post_queue)))
+    app.add_handler(CommandHandler("learn_style", restricted(learn_style)))
+    app.add_handler(CommandHandler("style_status", restricted(style_status)))
     app.add_handler(CommandHandler("bloggers_now", restricted(bloggers_now)))
     app.add_handler(CommandHandler("videoidea", restricted(videoidea)))
     app.add_handler(CommandHandler("shortidea", restricted(shortidea)))
