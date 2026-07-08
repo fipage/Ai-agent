@@ -14,8 +14,8 @@ import tempfile
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from openai import OpenAI
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler, ContextTypes, filters
 
 OPENAI_API_KEY = (
     os.getenv("OPENAI_API_KEY", "")
@@ -60,6 +60,8 @@ SUCCESS_FILE = "success_memory.json"
 STATE_FILE = "agent_state.json"
 COMPETITOR_VIDEO_DB_FILE = "competitor_video_db.json"
 LOG_FILE = "agent_runtime.log"
+NEWS_CANDIDATES_FILE = "news_candidates.json"
+POST_DRAFTS_FILE = "post_drafts.json"
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -838,6 +840,235 @@ def save_json(path, data):
                 os.remove(tmp_path)
             except Exception:
                 pass
+
+
+def load_news_candidates():
+    data = load_json(NEWS_CANDIDATES_FILE, {"updated_at": "", "items": []})
+    if isinstance(data, list):
+        return {"updated_at": "", "items": data}
+    if not isinstance(data, dict):
+        return {"updated_at": "", "items": []}
+    items = data.get("items", [])
+    if not isinstance(items, list):
+        items = []
+    return {"updated_at": data.get("updated_at", ""), "items": items}
+
+
+def save_news_candidates(items):
+    normalized = []
+    for index, item in enumerate(items[:7], 1):
+        if not isinstance(item, dict):
+            continue
+        normalized.append({
+            "number": int(item.get("number") or index),
+            "topic": str(item.get("topic") or item.get("title") or "").strip(),
+            "why_discussed": str(item.get("why_discussed") or item.get("why") or item.get("summary") or "").strip(),
+            "hype_score": str(item.get("hype_score") or item.get("hype") or "0/10").strip(),
+            "source": str(item.get("source") or "").strip(),
+            "source_url": str(item.get("source_url") or item.get("link") or "").strip(),
+            "can_make_post": bool(item.get("can_make_post", True)),
+            "raw": item.get("raw", {})
+        })
+    save_json(NEWS_CANDIDATES_FILE, {
+        "updated_at": datetime.utcnow().isoformat(),
+        "items": normalized
+    })
+    return normalized
+
+
+def load_post_drafts():
+    data = load_json(POST_DRAFTS_FILE, {"updated_at": "", "drafts": []})
+    if isinstance(data, list):
+        return {"updated_at": "", "drafts": data}
+    if not isinstance(data, dict):
+        return {"updated_at": "", "drafts": []}
+    drafts = data.get("drafts", [])
+    if not isinstance(drafts, list):
+        drafts = []
+    return {"updated_at": data.get("updated_at", ""), "drafts": drafts}
+
+
+def save_post_drafts(drafts):
+    save_json(POST_DRAFTS_FILE, {
+        "updated_at": datetime.utcnow().isoformat(),
+        "drafts": drafts[-50:]
+    })
+
+
+def upsert_post_draft(draft):
+    data = load_post_drafts()
+    drafts = data.get("drafts", [])
+    draft_id = draft.get("draft_id")
+    replaced = False
+    for i, item in enumerate(drafts):
+        if item.get("draft_id") == draft_id:
+            drafts[i] = draft
+            replaced = True
+            break
+    if not replaced:
+        drafts.append(draft)
+    save_post_drafts(drafts)
+    return draft
+
+
+def get_post_draft(draft_id):
+    for draft in load_post_drafts().get("drafts", []):
+        if draft.get("draft_id") == draft_id:
+            return draft
+    return None
+
+
+def format_news_candidates(items):
+    if not items:
+        return "Пока нет сохранённых новостей. Запусти /morning_now или дождись утреннего отчёта."
+    lines = ["🌅 Новости-кандидаты для Telegram", ""]
+    for item in items:
+        number = item.get("number")
+        can_post = "да" if item.get("can_make_post") else "нет"
+        lines.extend([
+            f"{number}. {item.get('topic', 'Без темы')}",
+            f"Почему обсуждают: {item.get('why_discussed', '—')}",
+            f"Hype Score: {item.get('hype_score', '—')}",
+            f"Источник: {item.get('source', '—')}",
+            f"Можно сделать пост: {can_post}",
+            ""
+        ])
+    lines.append("Чтобы подготовить пост: /pick_news номер")
+    return "\n".join(lines).strip()
+
+
+def build_news_candidates_from_sources(news, ru_youtube=None, west_youtube=None, limit=7):
+    ru_youtube = ru_youtube or []
+    west_youtube = west_youtube or []
+    candidates = []
+    for item in sorted(news, key=lambda x: (x.get("hype_score", 0), x.get("score", 0)), reverse=True):
+        if len(candidates) >= limit:
+            break
+        hype = int(item.get("hype_score") or 0)
+        if hype < 6 and len(candidates) >= 5:
+            continue
+        candidates.append({
+            "number": len(candidates) + 1,
+            "topic": item.get("title", "")[:180],
+            "why_discussed": (item.get("summary") or "Тема попала в свежие источники и совпадает с повесткой BTC/ETH/macro/regulation.")[:260],
+            "hype_score": f"{max(6, hype)}/10" if hype else "6/10",
+            "source": item.get("source", ""),
+            "source_url": item.get("link", ""),
+            "can_make_post": not is_trash_news(item.get("title", "")),
+            "raw": item
+        })
+
+    for video in (ru_youtube + west_youtube):
+        if len(candidates) >= 5:
+            break
+        title = video.get("title", "")
+        if not title or is_trash_news(title):
+            continue
+        candidates.append({
+            "number": len(candidates) + 1,
+            "topic": title[:180],
+            "why_discussed": f"Тему поднимают YouTube-источники; источник: {video.get('channel', 'YouTube')}.",
+            "hype_score": "6/10",
+            "source": video.get("channel", "YouTube"),
+            "source_url": f"https://youtu.be/{video.get('videoId')}" if video.get("videoId") else "",
+            "can_make_post": True,
+            "raw": video
+        })
+
+    return save_news_candidates(candidates[:limit])
+
+
+def format_draft_message(draft):
+    media = "Картинка: сгенерирована" if draft.get("image_path") else f"image_prompt:\n{draft.get('image_prompt', '—')}"
+    return (
+        "📝 Черновик Telegram-поста\n\n"
+        f"{draft.get('post_text', '')}\n\n"
+        f"Источник: {draft.get('source', '—')}\n"
+        f"Hype Score: {draft.get('hype_score', '—')}\n\n"
+        f"{media}\n\n"
+        "Публикуем?"
+    )
+
+
+def draft_keyboard(draft_id):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Опубликовать", callback_data=f"draft:publish:{draft_id}"),
+            InlineKeyboardButton("❌ Отмена", callback_data=f"draft:cancel:{draft_id}")
+        ],
+        [
+            InlineKeyboardButton("✏️ Переделать текст", callback_data=f"draft:rewrite_text:{draft_id}"),
+            InlineKeyboardButton("🎨 Переделать картинку", callback_data=f"draft:rewrite_image:{draft_id}")
+        ]
+    ])
+
+
+def generate_telegram_post_draft(candidate, rewrite_text=False, rewrite_image=False):
+    prompt = f"""
+Сделай черновик Telegram-поста для канала HiFi Trade по выбранной новости.
+
+Новость:
+{json.dumps(candidate, ensure_ascii=False, indent=2)}
+
+Нужно вернуть только JSON:
+{{
+  "post_text": "готовый текст Telegram-поста на русском",
+  "image_prompt": "английский промпт для строгой clean crypto/macro картинки"
+}}
+
+Правила:
+- без инвестиционных рекомендаций;
+- без обещаний прибыли;
+- без скама, 100x и дешёвого хайпа;
+- 900-1400 знаков;
+- сильный первый абзац;
+- понятный вывод для читателя;
+- стиль HiFi Trade: серьёзно, ясно, без воды.
+"""
+    if rewrite_text:
+        prompt += "\nПеределай именно текст: сделай сильнее хук и яснее вывод."
+    if rewrite_image:
+        prompt += "\nПеределай именно image_prompt: сделай визуал более строгим и кликабельным."
+
+    raw = ask_ai(prompt, max_chars=2200)
+    try:
+        cleaned = raw.strip().replace("```json", "").replace("```", "").strip()
+        parsed = json.loads(cleaned)
+    except Exception:
+        parsed = {
+            "post_text": raw.strip(),
+            "image_prompt": (
+                "Clean editorial crypto macro image, Bitcoin and Ethereum symbols, "
+                "serious dark background, market chart glow, no text, no hype, premium finance style"
+            )
+        }
+
+    return {
+        "post_text": str(parsed.get("post_text") or raw).strip()[:3500],
+        "image_prompt": str(parsed.get("image_prompt") or "").strip()[:1200]
+    }
+
+
+def try_generate_image(image_prompt, draft_id):
+    if os.getenv("OPENAI_IMAGES_ENABLED", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return None
+    try:
+        result = client.images.generate(
+            model=os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1"),
+            prompt=image_prompt,
+            size=os.getenv("OPENAI_IMAGE_SIZE", "1024x1024")
+        )
+        image_b64 = result.data[0].b64_json
+        if not image_b64:
+            return None
+        import base64
+        image_path = os.path.join(tempfile.gettempdir(), f"{draft_id}.png")
+        with open(image_path, "wb") as f:
+            f.write(base64.b64decode(image_b64))
+        return image_path
+    except Exception:
+        logger.exception("Image generation failed")
+        return None
 
 
 def get_runtime_state():
@@ -2482,6 +2713,7 @@ async def env_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "YOUTUBE_CLIENT_ID": os.getenv("YOUTUBE_CLIENT_ID"),
         "YOUTUBE_CLIENT_SECRET": os.getenv("YOUTUBE_CLIENT_SECRET"),
         "YOUTUBE_REFRESH_TOKEN": os.getenv("YOUTUBE_REFRESH_TOKEN"),
+        "TELEGRAM_CHANNEL_ID": os.getenv("TELEGRAM_CHANNEL_ID"),
         "ALLOWED_USER_IDS": os.getenv("ALLOWED_USER_IDS"),
     }
 
@@ -2698,6 +2930,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/setchat\n\n"
         "Команды:\n"
         "/morning_now — короткий новостной отчёт\n"
+        "/news_candidates — последний список новостей\n"
+        "/pick_news 1 — подготовить черновик поста по новости\n"
+        "/post_queue — pending-черновики\n"
         "/bloggers_now — настроение RU/CIS блогеров\n"
         "/videoidea — идея большого ролика\n"
         "/shortidea — идея Shorts\n"
@@ -2732,6 +2967,7 @@ async def morning_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     news = get_rss_news()
     ru_youtube = youtube_search("криптовалюта биткоин рынок сегодня", max_results=8)
     west_youtube = youtube_search("bitcoin crypto market today macro", max_results=8)
+    candidates = build_news_candidates_from_sources(news, ru_youtube, west_youtube, limit=7)
 
     prompt = f"""
 Сделай утренний новостной отчёт HiFi Trade в формате: «что сейчас обсуждают все».
@@ -2752,18 +2988,19 @@ RU/CIS YouTube:
 WEST YouTube:
 {json.dumps(west_youtube, ensure_ascii=False, indent=2)}
 
+Сохранённый список кандидатов:
+{json.dumps(candidates, ensure_ascii=False, indent=2)}
+
 Нужно:
-1. Выбери до 5 тем, которые сейчас реально обсуждают рынок и блогеры.
+1. Выведи 5–7 хайповых новостей под номерами из сохранённого списка кандидатов.
 2. Для каждой сильной новости выведи строго:
-   - Что произошло: 1 предложение
-   - Почему все обсуждают: 1 предложение
-   - Конфликт: страх/жадность/быки против медведей/данные против ожиданий
-   - Как упаковать для ролика: 1 короткий угол
-   - Заголовок: YouTube-заголовок без скама и обещаний иксов
-   - Текст на превью: 2-5 слов
+   - Номер
+   - Короткая тема
+   - Почему обсуждают: 1 предложение
    - Hype Score: X/10
-3. Если новость важная, но скучная или без конфликта — вынеси её в раздел «Фон», а не в темы для ролика.
-4. В конце 1 короткий общий вывод: какую тему брать первой и почему.
+   - Источник
+   - Можно ли сделать пост: да/нет
+3. В конце напиши: "Пост сам не публикуется. Чтобы подготовить черновик: /pick_news номер".
 
 Не придумывай торговые рекомендации.
 Не продвигай мемкоины, скам, low-cap garbage, random pumps и 100x-темы.
@@ -2771,6 +3008,124 @@ WEST YouTube:
     answer = ask_ai(prompt)
     remember_report("morning_news", answer)
     await reply_long(update, answer)
+
+
+async def news_candidates(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_news_candidates()
+    await reply_long(update, format_news_candidates(data.get("items", [])))
+
+
+async def pick_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await safe_reply(update, "Используй: /pick_news 1")
+        return
+    try:
+        number = int(context.args[0])
+    except Exception:
+        await safe_reply(update, "Номер должен быть числом. Пример: /pick_news 1")
+        return
+
+    items = load_news_candidates().get("items", [])
+    candidate = next((item for item in items if int(item.get("number", 0)) == number), None)
+    if not candidate:
+        await safe_reply(update, "Не нашёл такую новость в последнем news_candidates.json. Проверь /news_candidates")
+        return
+    if not candidate.get("can_make_post", True):
+        await safe_reply(update, "Эта новость помечена как неподходящая для поста.")
+        return
+
+    draft_id = stable_hash(f"{datetime.utcnow().isoformat()}-{number}-{candidate.get('topic')}")
+    generated = generate_telegram_post_draft(candidate)
+    image_path = try_generate_image(generated.get("image_prompt", ""), draft_id)
+    draft = {
+        "draft_id": draft_id,
+        "status": "pending",
+        "created_at": datetime.utcnow().isoformat(),
+        "candidate": candidate,
+        "post_text": generated.get("post_text", ""),
+        "image_prompt": generated.get("image_prompt", ""),
+        "image_path": image_path or "",
+        "source": candidate.get("source_url") or candidate.get("source") or "—",
+        "hype_score": candidate.get("hype_score", "—")
+    }
+    upsert_post_draft(draft)
+    text = format_draft_message(draft)
+    if image_path:
+        with open(image_path, "rb") as image:
+            await update.message.reply_photo(photo=image, caption=text[:1024], reply_markup=draft_keyboard(draft_id))
+        if len(text) > 1024:
+            await safe_reply(update, text[1024:])
+    else:
+        await update.message.reply_text(text, reply_markup=draft_keyboard(draft_id))
+
+
+async def post_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    drafts = [d for d in load_post_drafts().get("drafts", []) if d.get("status") == "pending"]
+    if not drafts:
+        await safe_reply(update, "Pending-черновиков нет.")
+        return
+    lines = ["🧾 Pending-черновики", ""]
+    for i, draft in enumerate(drafts, 1):
+        candidate = draft.get("candidate", {})
+        lines.append(f"{i}. {candidate.get('topic', 'Без темы')}")
+        lines.append(f"ID: {draft.get('draft_id')}")
+        lines.append(f"Hype Score: {draft.get('hype_score', '—')}")
+        lines.append(f"Источник: {draft.get('source', '—')}")
+        lines.append("")
+    await reply_long(update, "\n".join(lines).strip())
+
+
+async def draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    parts = (query.data or "").split(":")
+    if len(parts) != 3 or parts[0] != "draft":
+        return
+    action, draft_id = parts[1], parts[2]
+    draft = get_post_draft(draft_id)
+    if not draft:
+        await query.edit_message_text("Черновик не найден.")
+        return
+
+    if action == "cancel":
+        draft["status"] = "cancelled"
+        draft["updated_at"] = datetime.utcnow().isoformat()
+        upsert_post_draft(draft)
+        await query.edit_message_text("❌ Черновик отменён.")
+        return
+
+    if action in {"rewrite_text", "rewrite_image"}:
+        generated = generate_telegram_post_draft(
+            draft.get("candidate", {}),
+            rewrite_text=action == "rewrite_text",
+            rewrite_image=action == "rewrite_image"
+        )
+        if action == "rewrite_text":
+            draft["post_text"] = generated.get("post_text", draft.get("post_text", ""))
+        else:
+            draft["image_prompt"] = generated.get("image_prompt", draft.get("image_prompt", ""))
+            draft["image_path"] = try_generate_image(draft.get("image_prompt", ""), draft_id) or ""
+        draft["updated_at"] = datetime.utcnow().isoformat()
+        upsert_post_draft(draft)
+        await query.edit_message_text(format_draft_message(draft), reply_markup=draft_keyboard(draft_id))
+        return
+
+    if action == "publish":
+        channel_id = os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
+        if not channel_id:
+            await query.edit_message_text("Не задан TELEGRAM_CHANNEL_ID в Railway Variables")
+            return
+        if draft.get("image_path") and os.path.exists(draft.get("image_path")):
+            with open(draft["image_path"], "rb") as image:
+                await context.bot.send_photo(chat_id=channel_id, photo=image, caption=draft.get("post_text", "")[:1024])
+            if len(draft.get("post_text", "")) > 1024:
+                await context.bot.send_message(chat_id=channel_id, text=draft.get("post_text", "")[1024:])
+        else:
+            await context.bot.send_message(chat_id=channel_id, text=draft.get("post_text", ""))
+        draft["status"] = "published"
+        draft["published_at"] = datetime.utcnow().isoformat()
+        upsert_post_draft(draft)
+        await query.edit_message_text("✅ Пост опубликован в канал.")
 
 def collect_btc_sentiment_influencers():
     memory = load_memory()
@@ -4892,6 +5247,7 @@ async def scheduled_loop(app):
                         news = get_rss_news()
                         ru = youtube_search("криптовалюта биткоин рынок сегодня", max_results=6)
                         west = youtube_search("bitcoin crypto market today macro", max_results=6)
+                        candidates = build_news_candidates_from_sources(news, ru, west, limit=7)
 
                         prompt = f"""
 Автоматический утренний новостной отчёт HiFi Trade в формате: «что сейчас обсуждают все».
@@ -4909,18 +5265,19 @@ RU/CIS YouTube:
 WEST:
 {json.dumps(west, ensure_ascii=False, indent=2)}
 
+Сохранённый список кандидатов:
+{json.dumps(candidates, ensure_ascii=False, indent=2)}
+
 Дай:
-1. Выбери до 5 тем, которые сейчас реально обсуждают рынок и блогеры.
+1. Выведи 5–7 хайповых новостей под номерами из сохранённого списка кандидатов.
 2. Для каждой сильной новости выведи строго:
-   - Что произошло: 1 предложение
-   - Почему все обсуждают: 1 предложение
-   - Конфликт: страх/жадность/быки против медведей/данные против ожиданий
-   - Как упаковать для ролика: 1 короткий угол
-   - Заголовок: YouTube-заголовок без скама и обещаний иксов
-   - Текст на превью: 2-5 слов
+   - Номер
+   - Короткая тема
+   - Почему обсуждают
    - Hype Score: X/10
-3. Если новость важная, но скучная или без конфликта — вынеси её в раздел «Фон», а не в темы для ролика.
-4. В конце 1 короткий общий вывод: какую тему брать первой и почему.
+   - Источник
+   - Можно ли сделать пост: да/нет
+3. В конце напиши: "Пост сам не публикуется. Чтобы подготовить черновик: /pick_news номер".
 
 Не придумывай торговые рекомендации.
 Не продвигай мемкоины, скам, low-cap garbage, random pumps и 100x-темы.
@@ -5114,6 +5471,9 @@ def main():
     app.add_handler(CommandHandler("yt_video_stats", restricted(yt_video_stats)))
     app.add_handler(CommandHandler("setchat", restricted(setchat)))
     app.add_handler(CommandHandler("morning_now", restricted(morning_now)))
+    app.add_handler(CommandHandler("news_candidates", restricted(news_candidates)))
+    app.add_handler(CommandHandler("pick_news", restricted(pick_news)))
+    app.add_handler(CommandHandler("post_queue", restricted(post_queue)))
     app.add_handler(CommandHandler("bloggers_now", restricted(bloggers_now)))
     app.add_handler(CommandHandler("videoidea", restricted(videoidea)))
     app.add_handler(CommandHandler("shortidea", restricted(shortidea)))
@@ -5143,6 +5503,7 @@ def main():
     app.add_handler(CommandHandler("editor10", restricted(editor10)))
     app.add_handler(CommandHandler("strategy10", restricted(strategy10)))
     app.add_handler(CommandHandler("cheap", restricted(cheap)))
+    app.add_handler(CallbackQueryHandler(restricted(draft_callback), pattern=r"^draft:"))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, restricted(handle_message)))
 
