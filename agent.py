@@ -897,7 +897,9 @@ def read_post_style_from_memory():
 def get_post_style_profile_from_data(data):
     if not isinstance(data, dict):
         return {}
-    profile = data.get("style_profile")
+    profile = data.get("profile")
+    if profile is None:
+        profile = data.get("style_profile")
     return profile if isinstance(profile, dict) else {}
 
 
@@ -908,12 +910,14 @@ def load_post_style_profile():
     return get_post_style_profile_from_data(result.get("data"))
 
 
-def save_post_style_profile(profile, examples_count=0):
+def save_post_style_profile(profile, examples_count=0, raw_examples=None):
     profile = profile if isinstance(profile, dict) else {}
+    raw_examples = raw_examples if isinstance(raw_examples, list) else []
     payload = {
-        "updated_at": datetime.utcnow().isoformat(),
         "examples_count": int(examples_count or 0),
-        "style_profile": profile
+        "updated_at": datetime.utcnow().isoformat(),
+        "profile": profile,
+        "raw_examples": raw_examples
     }
     memory = load_memory()
     if not isinstance(memory, dict):
@@ -3105,19 +3109,24 @@ async def learn_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "generation_rules": ["Следовать сохранённому текстовому анализу стиля автора."]
         }
 
-    payload = save_post_style_profile(profile, examples_count=len(examples))
+    memory = load_memory()
+    if not isinstance(memory, dict):
+        memory = {}
+    memory["post_style"] = {
+        "examples_count": len(examples),
+        "updated_at": datetime.utcnow().isoformat(),
+        "profile": profile,
+        "raw_examples": examples
+    }
+    save_memory(memory)
+
     saved_memory = load_memory()
-    saved_data = saved_memory.get("post_style") if isinstance(saved_memory, dict) else {}
-    saved_profile = get_post_style_profile_from_data(saved_data)
-    if (
-        not isinstance(saved_data, dict)
-        or not saved_profile
-        or int(saved_data.get("examples_count", 0) or 0) != len(examples)
-    ):
-        await safe_reply(update, "Не удалось сохранить стиль в memory.json. Повтори /learn_style.")
+    saved_data = saved_memory.get("post_style") if isinstance(saved_memory, dict) else None
+    if isinstance(saved_data, dict) and "post_style" in saved_memory:
+        await safe_reply(update, f"Стиль загружен. Примеров: {len(examples)}")
         return
 
-    await safe_reply(update, f"Стиль загружен. Примеров: {payload.get('examples_count')}")
+    await safe_reply(update, "Ошибка: стиль не сохранился в memory.json")
 
 
 def summarize_post_style_profile(profile):
