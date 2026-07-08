@@ -1,5 +1,7 @@
 import os
 import json
+import csv
+from io import StringIO
 import asyncio
 import requests
 import feedparser
@@ -586,6 +588,202 @@ def get_memory_list(memory, key, fallback):
     if isinstance(value, list) and len(value) > 0:
         return value
     return fallback
+
+
+
+TEN_OUT_OF_TEN_EDITOR_RULES = """
+Режим 10/10 для HiFi Trade.
+
+Агент — не генератор кликбейта, а главный редактор аналитического канала.
+
+Каждая сильная идея обязана пройти фильтр:
+1. Актуальность: почему это важно именно сейчас?
+2. Спрос: будет ли это интересно зрителю?
+3. Доказательства: какие данные/графики/источники показать?
+4. Простота: поймёт ли новичок заголовок за 1 секунду?
+5. Глубина: есть ли реальная аналитика, а не вода?
+6. Контраргумент: что может сломать тезис?
+7. Упаковка: можно ли сделать сильное превью и название?
+8. Уникальность: чем ролик отличается от других?
+9. Риск: где можно ошибиться или перегнуть?
+10. Вывод: что зритель поймёт после ролика?
+
+Если нет данных, источников или контраргумента — идея не выше 7/10.
+Если заголовок сложный — переписать.
+Если ролик держится только на эмоции — отклонить.
+"""
+
+VIDEO_SCRIPT_10X_STRUCTURE = """
+Для большого ролика агент должен выдавать:
+1. Название.
+2. Превью-текст 2-4 слова.
+3. Хук на 20-30 секунд.
+4. Главный тезис.
+5. 3 смысловых блока.
+6. Какие графики/источники показать на экране.
+7. Контраргумент.
+8. Что смотреть дальше.
+9. Финальный вывод.
+10. Комментарий-вопрос для вовлечения.
+
+Стиль:
+- простой русский язык;
+- без банковского жаргона;
+- без воды;
+- без обещаний иксов;
+- без инвестиционных рекомендаций;
+- не пугать и не обещать;
+- объяснять, а не продавать.
+"""
+
+YOUTUBE_ANALYTICS_IMPORT_RULES = """
+YouTube-метрики важнее догадок.
+Если есть реальные данные по роликам, агент обязан учитывать:
+- CTR;
+- удержание;
+- просмотры;
+- подписки;
+- тему;
+- тип превью;
+- тип заголовка;
+- что было в хуке.
+
+Выводы строить не по одному ролику, а по паттернам.
+Один успешный ролик — не закон.
+3-5 повторяющихся результатов — уже сигнал.
+"""
+
+def parse_number_safe(value, default=0):
+    try:
+        if value is None:
+            return default
+        value = str(value).strip().replace("%", "").replace(",", ".")
+        if value == "":
+            return default
+        if "." in value:
+            return float(value)
+        return int(value)
+    except Exception:
+        return default
+
+
+def remember_video_performance_bulk(rows):
+    saved = []
+    for row in rows:
+        title = row.get("title") or row.get("название") or row.get("video") or row.get("ролик") or ""
+        if not title:
+            continue
+
+        item = remember_video_performance(
+            title=title,
+            url=row.get("url", ""),
+            views=row.get("views") or row.get("просмотры") or 0,
+            ctr=row.get("ctr") or row.get("CTR") or row.get("ctr_percent") or None,
+            retention=row.get("retention") or row.get("удержание") or row.get("avd") or None,
+            subscribers=row.get("subscribers") or row.get("подписчики") or 0,
+            notes=row.get("notes") or row.get("заметки") or ""
+        )
+        saved.append(item)
+    return saved
+
+
+def summarize_performance_patterns():
+    perf = get_performance_memory()
+    videos = perf.get("video_performance", [])[-100:]
+
+    if not videos:
+        return {
+            "total": 0,
+            "success": 0,
+            "neutral": 0,
+            "weak": 0,
+            "best": [],
+            "weakest": []
+        }
+
+    def views_num(v):
+        return parse_number_safe(v.get("views", 0), 0)
+
+    success = [v for v in videos if v.get("result") == "success"]
+    neutral = [v for v in videos if v.get("result") == "neutral"]
+    weak = [v for v in videos if v.get("result") == "weak"]
+
+    best = sorted(videos, key=views_num, reverse=True)[:5]
+    weakest = sorted(videos, key=views_num)[:5]
+
+    return {
+        "total": len(videos),
+        "success": len(success),
+        "neutral": len(neutral),
+        "weak": len(weak),
+        "best": best,
+        "weakest": weakest
+    }
+
+
+
+
+FINAL_10X_POLICY = """
+Финальная политика 10/10 для HiFi Trade:
+
+1. Агент не должен генерировать пустой контент.
+2. Любая идея ролика должна иметь: тезис, данные, источники, контраргумент, вывод.
+3. Если источников нет — агент обязан написать, какие источники нужно проверить, и не завышать оценку идеи.
+4. Если идея держится только на эмоции — максимум 6/10.
+5. Если нет контраргумента — максимум 7/10.
+6. Если заголовок сложный для новичка — переписать простым языком.
+7. Если тема хайповая, но слабая по доказательствам — пометить риск.
+8. Агент должен думать как главный редактор канала, а не как генератор кликбейта.
+9. Реальные метрики канала важнее догадок.
+10. Цель: понятный, глубокий, доказательный контент без инфоцыганства.
+
+Формула:
+простота упаковки + глубина содержания + доказательства + контраргумент = сильный ролик.
+"""
+
+
+def ensure_memory_defaults(memory):
+    changed = False
+
+    defaults = {
+        "telegram_chat_id": "",
+        "report_timezone": "Europe/Moscow",
+        "daily_news_time": "09:00",
+        "smart_monitor_enabled": True,
+        "smart_monitor_interval_minutes": 120,
+        "smart_monitor_min_score": 12,
+        "smart_monitor_max_alerts_per_day": 2,
+        "last_known_mood": "unknown",
+        "sent_keys": [],
+        "used_ideas": [],
+        "weekly_notes": [],
+        "conversation_history": {}
+    }
+
+    for key, value in defaults.items():
+        if key not in memory:
+            memory[key] = value
+            changed = True
+
+    fallback_lists = {
+        "ru_cis_sentiment_watchlist": DEFAULT_RU_CIS_SENTIMENT_WATCHLIST,
+        "ru_cis_bloggers": DEFAULT_RU_CIS_BLOGGERS,
+        "ru_cis_monitoring_sources": DEFAULT_RU_CIS_MONITORING_SOURCES,
+        "west_sentiment_watchlist": DEFAULT_WEST_SENTIMENT_WATCHLIST,
+        "west_bloggers": DEFAULT_WEST_BLOGGERS,
+        "west_monitoring_sources": DEFAULT_WEST_MONITORING_SOURCES,
+    }
+
+    for key, fallback in fallback_lists.items():
+        value = memory.get(key)
+        if not isinstance(value, list) or len(value) == 0:
+            memory[key] = fallback
+            changed = True
+
+    if changed:
+        save_json(MEMORY_FILE, memory)
+
+    return memory
 
 
 def load_json(path, default):
@@ -1599,6 +1797,18 @@ def ask_ai(prompt, max_chars=3500):
 Правила аналитического содержания:
 {ANALYTICAL_CONTENT_RULES}
 
+Правила редактора 10/10:
+{TEN_OUT_OF_TEN_EDITOR_RULES}
+
+Финальная политика 10/10:
+{FINAL_10X_POLICY}
+
+Структура сильного ролика:
+{VIDEO_SCRIPT_10X_STRUCTURE}
+
+Правила обучения на YouTube-метриках:
+{YOUTUBE_ANALYTICS_IMPORT_RULES}
+
 Память эффективности роликов:
 {json.dumps(performance_context_for_prompt(), ensure_ascii=False, indent=2)}
 
@@ -1646,6 +1856,41 @@ async def reply_long(update, text):
         text = "Пустой ответ."
     for i in range(0, len(text), 3500):
         await update.message.reply_text(text[i:i+3500])
+
+
+async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    memory = load_memory()
+    success = load_success()
+
+    ru_bloggers = get_memory_list(memory, "ru_cis_bloggers", DEFAULT_RU_CIS_BLOGGERS)
+    ru_sent = get_memory_list(memory, "ru_cis_sentiment_watchlist", DEFAULT_RU_CIS_SENTIMENT_WATCHLIST)
+    west_bloggers = get_memory_list(memory, "west_bloggers", DEFAULT_WEST_BLOGGERS)
+    west_sent = get_memory_list(memory, "west_sentiment_watchlist", DEFAULT_WEST_SENTIMENT_WATCHLIST)
+
+    lines = [
+        "✅ Проверка бота HiFi Trade",
+        "",
+        f"Telegram chat id: {'есть' if memory.get('telegram_chat_id') else 'пусто — напиши /setchat'}",
+        f"Новости: каждый день в {memory.get('daily_news_time', '09:00')} ({memory.get('report_timezone', 'Europe/Moscow')})",
+        f"Smart monitor: {'включен' if memory.get('smart_monitor_enabled') else 'выключен'}",
+        f"Smart interval: {memory.get('smart_monitor_interval_minutes')} минут",
+        f"Smart min score: {memory.get('smart_monitor_min_score')}",
+        "",
+        f"RU/CIS блогеры: {len(ru_bloggers)}",
+        f"RU/CIS sentiment: {len(ru_sent)}",
+        f"WEST блогеры: {len(west_bloggers)}",
+        f"WEST sentiment: {len(west_sent)}",
+        "",
+        f"Video performance записей: {len(success.get('video_performance', []))}",
+        f"Successful patterns: {len(success.get('successful_patterns', []))}",
+        f"Failed patterns: {len(success.get('failed_patterns', []))}",
+        "",
+        "Если в списках не 0 — бот готов."
+    ]
+
+    await update.message.reply_text("\n".join(lines))
+
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -2665,6 +2910,117 @@ async def weekly_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+
+async def import_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Импорт метрик роликов текстом.
+    Формат после команды:
+    title,views,ctr,retention,subscribers,notes
+    Почему Bitcoin не падает,1500,6.2,38,12,простой заголовок сработал
+    """
+    raw = update.message.text or ""
+    raw = raw.replace("/import_perf", "", 1).strip()
+
+    if not raw:
+        await update.message.reply_text(
+            "Пришли данные так:\n\n"
+            "/import_perf\n"
+            "title,views,ctr,retention,subscribers,notes\n"
+            "Почему Bitcoin не падает,1500,6.2,38,12,простой заголовок сработал\n"
+            "Альткоины готовы к росту,700,3.1,22,2,слишком общий заголовок"
+        )
+        return
+
+    try:
+        reader = csv.DictReader(StringIO(raw))
+        rows = list(reader)
+        saved = remember_video_performance_bulk(rows)
+    except Exception as e:
+        await update.message.reply_text(f"Не смог разобрать таблицу: {e}")
+        return
+
+    if not saved:
+        await update.message.reply_text("Не нашёл ролики для импорта. Проверь заголовки колонок: title,views,ctr,retention,subscribers,notes")
+        return
+
+    await update.message.reply_text(f"Импортировал метрики роликов: {len(saved)} шт.\nТеперь можно вызвать /performance")
+
+
+async def editor10(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    idea = " ".join(context.args).strip()
+
+    if not idea:
+        await update.message.reply_text(
+            "Используй:\n"
+            "/editor10 идея ролика\n\n"
+            "Пример:\n"
+            "/editor10 Почему Bitcoin не падает несмотря на страх на рынке"
+        )
+        return
+
+    prompt = f"""
+Оцени и доработай идею ролика для HiFi Trade в режиме главного редактора 10/10.
+
+Идея:
+{idea}
+
+Правила:
+{TEN_OUT_OF_TEN_EDITOR_RULES}
+
+Структура:
+{VIDEO_SCRIPT_10X_STRUCTURE}
+
+Память эффективности роликов:
+{json.dumps(performance_context_for_prompt(), ensure_ascii=False, indent=2)}
+
+Дай:
+1. Оценка идеи /10
+2. Что в идее сильного
+3. Что слабого
+4. Как сделать её не инфоцыганской
+5. Название
+6. Текст на превью
+7. Хук
+8. Структура ролика
+9. Данные/источники для экрана
+10. Контраргумент
+11. Финальный вывод
+
+Ответ на русском. Без воды.
+"""
+
+    await reply_long(update, ask_ai(prompt, max_chars=3500))
+
+
+async def strategy10(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    prompt = f"""
+Ты главный редактор HiFi Trade.
+
+Проанализируй память эффективности роликов и правила канала.
+
+Память эффективности:
+{json.dumps(performance_context_for_prompt(), ensure_ascii=False, indent=2)}
+
+Сводка паттернов:
+{json.dumps(summarize_performance_patterns(), ensure_ascii=False, indent=2)}
+
+Дай:
+1. Текущая оценка канала по контент-стратегии /10
+2. Какие темы стоит усиливать
+3. Какие темы стоит убирать
+4. Какие заголовки стоит повторять
+5. Какие превью стоит повторять
+6. 5 идей больших роликов
+7. 5 идей Shorts
+8. Что делать на этой неделе
+
+Ответ компактно, но по делу.
+"""
+
+    await reply_long(update, ask_ai(prompt, max_chars=3500))
+
+
+
 async def remember_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw = " ".join(context.args).strip()
 
@@ -3458,6 +3814,7 @@ def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", restricted(start)))
+    app.add_handler(CommandHandler("health", restricted(health)))
     app.add_handler(CommandHandler("setchat", restricted(setchat)))
     app.add_handler(CommandHandler("morning_now", restricted(morning_now)))
     app.add_handler(CommandHandler("bloggers_now", restricted(bloggers_now)))
@@ -3485,6 +3842,9 @@ def main():
     app.add_handler(CommandHandler("memory_status", restricted(memory_status)))
     app.add_handler(CommandHandler("remember_perf", restricted(remember_perf)))
     app.add_handler(CommandHandler("performance", restricted(performance)))
+    app.add_handler(CommandHandler("import_perf", restricted(import_perf)))
+    app.add_handler(CommandHandler("editor10", restricted(editor10)))
+    app.add_handler(CommandHandler("strategy10", restricted(strategy10)))
     app.add_handler(CommandHandler("cheap", restricted(cheap)))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, restricted(handle_message)))
