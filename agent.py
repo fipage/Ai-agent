@@ -218,6 +218,33 @@ YOUTUBE_PACKAGING_RULES = """
 
 
 
+
+HYPE_NEWS_RULES = """
+Фильтр хайповых новостей для роста HiFi Trade.
+
+Цель утренних новостей — найти не просто важное, а то, что уже массово обсуждают рынок, медиа и блогеры,
+потому что маленькому каналу нужны темы с внешним спросом.
+
+Новость проходит как тема для ролика только если одновременно выполняется:
+1. Массовое обсуждение: тема видна в нескольких источниках, YouTube-повестке, Google News/RSS или вокруг крупных игроков.
+2. Связь с ядром канала: BTC, ETH, крупные альты, ETF, ФРС, ликвидность, ставки, регуляторы, фондовый рынок или рыночный цикл.
+3. Есть эмоция рынка: конфликт, страх, жадность, спор быков и медведей, риск слома ожиданий или крупные деньги против розницы.
+4. Можно сделать понятный YouTube-заголовок и превью без банковского жаргона.
+5. Тема не является мемкоином, скамом, random pump, low-cap garbage, “100x” или призывом срочно покупать.
+
+Для каждой сильной новости выводить:
+- что произошло;
+- почему все обсуждают;
+- конфликт;
+- как упаковать для ролика;
+- заголовок;
+- текст на превью;
+- Hype Score /10.
+
+Если новость важная, но скучная, слабая по конфликту или плохо упаковывается для YouTube, помечать её как “Фон”,
+а не как главную тему для ролика.
+"""
+
 SOURCE_TIER_RULES = """
 Рейтинг источников:
 Tier 1 — данные и первоисточники: Farside, Coinglass, Glassnode, The Block, SEC, ETF/биржевые данные, FRED, TradingView charts.
@@ -1546,6 +1573,50 @@ def news_topic_score(title, summary="", source_name="", link=""):
     return score
 
 
+def calculate_hype_score(title, summary="", source_name="", link=""):
+    if is_trash_news(title):
+        return 0
+
+    text = f"{title} {summary} {source_name} {link}".lower()
+    score = 0
+
+    market_terms = [
+        "bitcoin", "btc", "биткоин", "ethereum", "eth", "эфир",
+        "altcoin", "альт", "etf", "fed", "federal reserve", "фрс",
+        "rate", "ставк", "inflation", "инфляц", "liquidity", "ликвид",
+        "sec", "regulation", "регуляц", "market", "рынок"
+    ]
+    conflict_terms = [
+        "crash", "dump", "selloff", "fear", "greed", "panic", "surge", "rally",
+        "record", "breakout", "risk", "warning", "lawsuit", "ban", "approval",
+        "outflow", "inflow", "volatility", "обвал", "паден", "паник", "страх",
+        "жадност", "ралли", "рекорд", "прорыв", "риск", "предупреж",
+        "запрет", "одобр", "приток", "отток", "волатиль"
+    ]
+    discussion_terms = [
+        "analysts", "traders", "investors", "wall street", "blackrock", "fidelity",
+        "microstrategy", "saylor", "binance", "coinbase", "sec", "bloggers",
+        "аналитик", "трейдер", "инвестор", "обсужд", "блогер", "крупн", "институц"
+    ]
+    packaging_terms = [
+        "why", "could", "next", "now", "today", "explained", "что", "почему",
+        "сейчас", "сегодня", "может", "будет", "главн", "новый"
+    ]
+
+    if any(term in text for term in market_terms):
+        score += 3
+    if any(term in text for term in conflict_terms):
+        score += 3
+    if any(term in text for term in discussion_terms):
+        score += 2
+    if any(term in text for term in packaging_terms):
+        score += 1
+    if source_weight(source_name, link) >= 8:
+        score += 1
+
+    return max(0, min(10, score))
+
+
 def get_rss_news():
     feeds = [
         # Global crypto / digital assets
@@ -1603,7 +1674,8 @@ def get_rss_news():
                     "published": published,
                     "source": source_name,
                     "summary": summary,
-                    "score": score
+                    "score": score,
+                    "hype_score": calculate_hype_score(title, summary, source_name, link)
                 })
         except Exception:
             continue
@@ -1612,7 +1684,7 @@ def get_rss_news():
     deduped = []
     seen_keys = set()
 
-    for item in sorted(news, key=lambda x: x.get("score", 0), reverse=True):
+    for item in sorted(news, key=lambda x: (x.get("hype_score", 0), x.get("score", 0)), reverse=True):
         key = clean_text_for_dedupe(item.get("title", ""))
         if not key:
             continue
@@ -1625,7 +1697,7 @@ def get_rss_news():
         deduped.append(item)
 
     # Return strong candidates only. OpenAI will select final 5-7.
-    strong = [x for x in deduped if x.get("score", 0) >= 7]
+    strong = [x for x in deduped if x.get("score", 0) >= 7 or x.get("hype_score", 0) >= 6]
 
     if len(strong) < 10:
         strong = deduped
@@ -2662,8 +2734,11 @@ async def morning_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     west_youtube = youtube_search("bitcoin crypto market today macro", max_results=8)
 
     prompt = f"""
-Сделай утренний новостной отчёт HiFi Trade.
-Используй только самые важные новости из списка. Не пересказывай всё подряд.
+Сделай утренний новостной отчёт HiFi Trade в формате: «что сейчас обсуждают все».
+Ищи не просто важные новости, а хайповые темы с массовым обсуждением и потенциалом роста канала.
+
+Правила отбора:
+{HYPE_NEWS_RULES}
 
 Fear & Greed:
 {fear_greed}
@@ -2678,20 +2753,20 @@ WEST YouTube:
 {json.dumps(west_youtube, ensure_ascii=False, indent=2)}
 
 Нужно:
-1. 5 самых популярных и обсуждаемых новостей из крипты и инвестиций.
-2. Для каждой новости строго 3-4 строки:
-   - Заголовок
-   - Источник
-   - Суть: 1 предложение
-   - Почему важно: 1 предложение
-   - Влияние: BTC / ETH / альты / фондовый рынок / макро / регуляции + High/Medium/Low
-3. В конце 1 короткий общий вывод.
+1. Выбери до 5 тем, которые сейчас реально обсуждают рынок и блогеры.
+2. Для каждой сильной новости выведи строго:
+   - Что произошло: 1 предложение
+   - Почему все обсуждают: 1 предложение
+   - Конфликт: страх/жадность/быки против медведей/данные против ожиданий
+   - Как упаковать для ролика: 1 короткий угол
+   - Заголовок: YouTube-заголовок без скама и обещаний иксов
+   - Текст на превью: 2-5 слов
+   - Hype Score: X/10
+3. Если новость важная, но скучная или без конфликта — вынеси её в раздел «Фон», а не в темы для ролика.
+4. В конце 1 короткий общий вывод: какую тему брать первой и почему.
 
-Не добавляй идеи для роликов.
-Не добавляй идеи для Shorts.
-Не добавляй настроение аудитории.
-Не добавляй раздел про мусорные темы.
 Не придумывай торговые рекомендации.
+Не продвигай мемкоины, скам, low-cap garbage, random pumps и 100x-темы.
 """
     answer = ask_ai(prompt)
     remember_report("morning_news", answer)
@@ -4819,8 +4894,11 @@ async def scheduled_loop(app):
                         west = youtube_search("bitcoin crypto market today macro", max_results=6)
 
                         prompt = f"""
-Автоматический утренний новостной отчёт HiFi Trade.
-Используй только самые важные новости из списка. Не пересказывай всё подряд.
+Автоматический утренний новостной отчёт HiFi Trade в формате: «что сейчас обсуждают все».
+Ищи не просто важные новости, а хайповые темы с массовым обсуждением и потенциалом роста канала.
+
+Правила отбора:
+{HYPE_NEWS_RULES}
 
 Новости:
 {json.dumps(news, ensure_ascii=False, indent=2)}
@@ -4832,20 +4910,20 @@ WEST:
 {json.dumps(west, ensure_ascii=False, indent=2)}
 
 Дай:
-1. 5 самых популярных и обсуждаемых новостей из крипты и инвестиций.
-2. Для каждой новости строго 3-4 строки:
-   - Заголовок
-   - Источник
-   - Суть: 1 предложение
-   - Почему важно: 1 предложение
-   - Влияние: BTC / ETH / альты / фондовый рынок / макро / регуляции + High/Medium/Low
-3. В конце 1 короткий общий вывод.
+1. Выбери до 5 тем, которые сейчас реально обсуждают рынок и блогеры.
+2. Для каждой сильной новости выведи строго:
+   - Что произошло: 1 предложение
+   - Почему все обсуждают: 1 предложение
+   - Конфликт: страх/жадность/быки против медведей/данные против ожиданий
+   - Как упаковать для ролика: 1 короткий угол
+   - Заголовок: YouTube-заголовок без скама и обещаний иксов
+   - Текст на превью: 2-5 слов
+   - Hype Score: X/10
+3. Если новость важная, но скучная или без конфликта — вынеси её в раздел «Фон», а не в темы для ролика.
+4. В конце 1 короткий общий вывод: какую тему брать первой и почему.
 
-Не добавляй идеи для роликов.
-Не добавляй идеи для Shorts.
-Не добавляй настроение аудитории.
-Не добавляй раздел про мусорные темы.
 Не придумывай торговые рекомендации.
+Не продвигай мемкоины, скам, low-cap garbage, random pumps и 100x-темы.
 """
                         answer = ask_ai(prompt)
                         remember_report("auto_morning_news", answer)
