@@ -1845,6 +1845,8 @@ def ask_ai(prompt, max_chars=3500):
     )
 
     text = response.output_text or "Не удалось получить ответ."
+    if max_chars is None:
+        return text
     return text[:max_chars]
 
 async def send_long(context, chat_id, text):
@@ -2286,7 +2288,7 @@ async def topic_gap_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Ответ на русском.
 """
 
-    await reply_long(update, ask_ai(prompt, max_chars=4500))
+    await reply_long(update, ask_ai(prompt, max_chars=9000))
 
 
 async def competitor_db_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
