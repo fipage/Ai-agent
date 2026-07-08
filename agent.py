@@ -4,7 +4,10 @@ import asyncio
 import requests
 import feedparser
 import concurrent.futures
-from datetime import datetime
+import logging
+import hashlib
+import tempfile
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from openai import OpenAI
 from telegram import Update
@@ -50,6 +53,16 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 MEMORY_FILE = "memory.json"
 SUCCESS_FILE = "success_memory.json"
+STATE_FILE = "agent_state.json"
+LOG_FILE = "agent_runtime.log"
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    handlers=[logging.StreamHandler(), logging.FileHandler(LOG_FILE, encoding="utf-8")]
+)
+logger = logging.getLogger("hifi_agent")
+
 
 MODEL_CHEAP = "gpt-4.1-mini"
 MAX_OUTPUT_TOKENS = 850
@@ -164,6 +177,182 @@ QUALITY_FRAMEWORK = """
 - Всегда объясняй, почему выбранный вариант получил высокую оценку.
 """
 
+
+
+YOUTUBE_PACKAGING_RULES = """
+Нельзя выдавать сырой инфоповод как готовую идею.
+
+Перед отправкой пользователю агент обязан:
+1. Определить сырой инфоповод.
+2. Перевести его на язык обычного зрителя.
+3. Найти простой конфликт/интригу:
+   - толпа ошибается?
+   - рынок ведёт себя не так, как ждут?
+   - сильный актив против слабого актива?
+   - данные против эмоций?
+   - RU/CIS против Запада?
+   - крупные деньги против розницы?
+4. Убрать лишние сложные имена из заголовка, если они не усиливают клик.
+5. Сделать название понятным человеку без подготовки.
+6. Сделать превью понятным за 1 секунду.
+7. На превью использовать 2-5 слов.
+8. Не использовать банковские/аналитические заголовки вроде:
+   - анализ JPMorgan и Hilbert
+   - макроликвидность на фоне ограничений
+   - институциональные движения в металлрынке
+9. Если тема звучит как отчёт банка — переделать в человеческий YouTube-угол.
+10. Финальный ответ должен быть готов к использованию:
+   - сильное название
+   - хук
+   - 3 превью
+   - почему зритель кликнет
+   - что именно сказать в ролике/посте
+11. Если упаковка ниже 8/10 — переделать до 8/10+.
+12. Не показывать сырые варианты пользователю.
+"""
+
+
+
+SOURCE_TIER_RULES = """
+Рейтинг источников:
+Tier 1 — данные и первоисточники: Farside, Coinglass, Glassnode, The Block, SEC, ETF/биржевые данные, FRED, TradingView charts.
+Tier 2 — сильные медиа/аналитика: CoinDesk, Blockworks, Cointelegraph, Decrypt, CryptoSlate, Investing, CNBC, Yahoo Finance, ForkLog, РБК Крипто.
+Tier 3 — вторичные/слабые источники: мелкие сайты, пересказы, непроверенные новости, эмоциональные посты.
+
+Для серьёзного ролика нужен минимум один Tier 1 или Tier 2 источник.
+Если источник слабый, агент обязан пометить это и не строить на нём главный тезис.
+"""
+
+ANALYTICAL_CONTENT_RULES = """
+Каждая идея ролика должна содержать:
+1. Главный тезис.
+2. 2-3 причины.
+3. Какие данные/графики показать на экране.
+4. Ссылки/источники, которые нужно проверить.
+5. Контраргумент: что может опровергнуть тезис.
+6. Вывод для зрителя.
+
+Запрещено:
+- выдавать пустой ролик без данных;
+- делать сценарий только на эмоции;
+- говорить "рынок странный" без объяснения;
+- использовать интригу без аналитики.
+"""
+
+def get_performance_memory():
+    data = load_success()
+    return {
+        "video_performance": data.get("video_performance", [])[-50:],
+        "successful_patterns": data.get("successful_patterns", [])[-30:],
+        "failed_patterns": data.get("failed_patterns", [])[-30:]
+    }
+
+
+def save_performance_memory(memory):
+    data = load_success()
+    data["video_performance"] = memory.get("video_performance", [])[-100:]
+    data["successful_patterns"] = memory.get("successful_patterns", [])[-50:]
+    data["failed_patterns"] = memory.get("failed_patterns", [])[-50:]
+    save_success(data)
+
+
+def classify_video_result(views=0, ctr=None, retention=None, subscribers=0):
+    score = 0
+    try:
+        views = int(views)
+    except Exception:
+        views = 0
+    try:
+        subscribers = int(subscribers)
+    except Exception:
+        subscribers = 0
+
+    if views >= 10000:
+        score += 3
+    elif views >= 3000:
+        score += 2
+    elif views >= 1000:
+        score += 1
+
+    if ctr is not None:
+        try:
+            ctr_float = float(str(ctr).replace("%", "").replace(",", "."))
+            if ctr_float >= 8:
+                score += 3
+            elif ctr_float >= 5:
+                score += 2
+            elif ctr_float >= 3:
+                score += 1
+        except Exception:
+            pass
+
+    if retention is not None:
+        try:
+            ret_float = float(str(retention).replace("%", "").replace(",", "."))
+            if ret_float >= 50:
+                score += 3
+            elif ret_float >= 35:
+                score += 2
+            elif ret_float >= 25:
+                score += 1
+        except Exception:
+            pass
+
+    if subscribers >= 50:
+        score += 2
+    elif subscribers >= 10:
+        score += 1
+
+    if score >= 6:
+        return "success"
+    if score <= 2:
+        return "weak"
+    return "neutral"
+
+
+def remember_video_performance(title, url="", views=0, ctr=None, retention=None, subscribers=0, notes=""):
+    perf = get_performance_memory()
+    result = classify_video_result(views, ctr, retention, subscribers)
+
+    item = {
+        "title": title,
+        "url": url,
+        "views": views,
+        "ctr": ctr,
+        "retention": retention,
+        "subscribers": subscribers,
+        "notes": notes,
+        "result": result,
+        "created_at": datetime.utcnow().isoformat()
+    }
+
+    perf["video_performance"].append(item)
+
+    pattern = {
+        "title": title,
+        "result": result,
+        "reason": notes,
+        "created_at": item["created_at"]
+    }
+
+    if result == "success":
+        perf["successful_patterns"].append(pattern)
+    elif result == "weak":
+        perf["failed_patterns"].append(pattern)
+
+    save_performance_memory(perf)
+    return item
+
+
+def performance_context_for_prompt():
+    perf = get_performance_memory()
+    return {
+        "recent_video_performance": perf.get("video_performance", [])[-15:],
+        "successful_patterns": perf.get("successful_patterns", [])[-10:],
+        "failed_patterns": perf.get("failed_patterns", [])[-10:]
+    }
+
+
 def load_json(path, default):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -172,8 +361,69 @@ def load_json(path, default):
         return default
 
 def save_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    """Atomic JSON write: protects memory files from corruption during crashes."""
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=os.path.basename(path) + ".", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+
+def get_runtime_state():
+    return load_json(STATE_FILE, {"seen_event_keys": [], "sent_keys": []})
+
+
+def save_runtime_state(state):
+    if "seen_event_keys" in state:
+        state["seen_event_keys"] = list(dict.fromkeys(state.get("seen_event_keys", [])))[-1000:]
+    if "sent_keys" in state:
+        state["sent_keys"] = list(dict.fromkeys(state.get("sent_keys", [])))[-1000:]
+    save_json(STATE_FILE, state)
+
+
+def get_seen_event_keys():
+    state = get_runtime_state()
+    return set(state.get("seen_event_keys", []))
+
+
+def save_seen_event_key(key):
+    if not key:
+        return
+    state = get_runtime_state()
+    keys = state.get("seen_event_keys", [])
+    if key not in keys:
+        keys.append(key)
+    state["seen_event_keys"] = keys[-1000:]
+    save_runtime_state(state)
+
+
+def load_sent_keys():
+    state = get_runtime_state()
+    return set(state.get("sent_keys", []))
+
+
+def mark_sent_key(sent_keys, key):
+    if not key:
+        return
+    sent_keys.add(key)
+    state = get_runtime_state()
+    keys = state.get("sent_keys", [])
+    if key not in keys:
+        keys.append(key)
+    state["sent_keys"] = keys[-1000:]
+    save_runtime_state(state)
+
+
+def stable_hash(value):
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:16]
 
 def load_memory():
     return load_json(MEMORY_FILE, {})
@@ -185,7 +435,10 @@ def load_success():
     return load_json(SUCCESS_FILE, {
         "successful_videos": [],
         "used_ideas": [],
-        "weekly_notes": []
+        "weekly_notes": [],
+        "video_performance": [],
+        "successful_patterns": [],
+        "failed_patterns": []
     })
 
 def save_success(data):
@@ -376,7 +629,7 @@ def passes_quality_gate(answer):
     return any(marker in normalized for marker in strong_markers)
 
 
-def ask_ai_strong(prompt, max_chars=2400):
+def ask_ai_packaged(prompt, max_chars=2300):
     """
     Generates only strong content. Memory is a cooldown, not a permanent ban.
     If the first answer is weak, asks once to improve it to 8/10+.
@@ -417,6 +670,91 @@ def ask_ai_strong(prompt, max_chars=2400):
     )
 
 
+
+def ask_ai_packaged(prompt, max_chars=2200):
+    """
+    Final editorial pass: raw market event -> human YouTube/Telegram packaging.
+    Use for proactive alerts, video ideas, Shorts ideas and competitor opportunities.
+    """
+    packaged_prompt = f"""
+{prompt}
+
+Финальная редакторская проверка перед отправкой пользователю:
+
+{YOUTUBE_PACKAGING_RULES}
+
+Запрещено:
+- сырые заголовки из новостей
+- длинные банковские формулировки
+- перегруженные названия
+- названия, которые понятны только аналитикам
+- упоминание JPMorgan/Hilbert/Glassnode/и т.п. в заголовке, если без них клик будет понятнее
+
+Обязательно:
+- переведи тему в простой конфликт
+- дай готовый заголовок для зрителя
+- дай хук
+- дай 3 превью
+- оцени упаковку /10
+- добавь блок "Данные/источники для экрана"
+- добавь блок "Контраргумент"
+- ответ должен быть компактный и готовый к использованию
+"""
+
+    first = ask_ai_strong(packaged_prompt, max_chars=max_chars)
+
+    raw_markers = [
+        "jpmorgan",
+        "hilbert",
+        "макроликвид",
+        "ликвидных огранич",
+        "институциональные движения",
+        "анализ ",
+        "на фоне падающих",
+        "на фоне усиливающихся"
+    ]
+
+    lower = first.lower()
+    if any(marker in lower for marker in raw_markers):
+        repack_prompt = f"""
+Ответ всё ещё звучит как сырой аналитический отчёт.
+
+Переделай в человеческую YouTube-упаковку.
+Сохрани смысл, но убери тяжёлые формулировки.
+
+Сырой ответ:
+{first}
+
+Верни только финальный вариант:
+
+Название:
+...
+
+Оценка упаковки: .../10
+
+Почему кликнут:
+...
+
+Хук:
+...
+
+Превью:
+1. "..." — .../10
+2. "..." — .../10
+3. "..." — .../10
+
+Короткая структура:
+1. ...
+2. ...
+3. ...
+4. ...
+5. ...
+"""
+        return ask_ai_strong(repack_prompt, max_chars=max_chars)
+
+    return first
+
+
 def build_weekly_content_plan():
     memory_context = get_recent_memory_context(limit=30)
 
@@ -425,6 +763,7 @@ def build_weekly_content_plan():
     ru = youtube_search("биткоин крипта рынок BTC", max_results=8)
     west = youtube_search("bitcoin crypto market macro", max_results=8)
     competitor_topics = collect_ru_competitor_topics(max_channels=20, per_channel=2)
+    search_demand = collect_search_demand_proxy(max_queries=20)
 
     prompt = f"""
 Составь автоматический недельный контент-план для YouTube-канала HiFi Trade.
@@ -491,7 +830,7 @@ RU/CIS конкуренты:
 ...
 """
 
-    answer = ask_ai_strong(prompt, max_chars=2300)
+    answer = ask_ai_packaged(prompt, max_chars=2200)
     remember_report("auto_weekly_content_plan", answer)
 
     # remember individual plan as generated content too
@@ -628,7 +967,8 @@ def youtube_search(query, max_results=7):
         results.append({
             "title": item["snippet"]["title"],
             "channel": item["snippet"]["channelTitle"],
-            "publishedAt": item["snippet"]["publishedAt"]
+            "publishedAt": item["snippet"]["publishedAt"],
+            "videoId": item.get("id", {}).get("videoId", "")
         })
     return results
 
@@ -857,6 +1197,135 @@ def get_compact_success():
     }
 
 
+def safe_get_json(url, params=None, timeout=15):
+    try:
+        r = requests.get(url, params=params or {}, timeout=timeout, headers={"User-Agent": "HiFiTradeAgent/1.0"})
+        if r.status_code >= 400:
+            logger.warning("HTTP %s for %s: %s", r.status_code, url, r.text[:300])
+            return None
+        return r.json()
+    except Exception:
+        logger.exception("JSON request failed: %s", url)
+        return None
+
+
+def get_market_snapshot():
+    """Free lightweight market module: BTC/ETH/SOL price, 24h move, volume, dominance proxy."""
+    data = safe_get_json(
+        "https://api.coingecko.com/api/v3/coins/markets",
+        params={
+            "vs_currency": "usd",
+            "ids": "bitcoin,ethereum,solana,binancecoin,ripple",
+            "order": "market_cap_desc",
+            "per_page": 5,
+            "page": 1,
+            "sparkline": "false",
+            "price_change_percentage": "24h,7d"
+        },
+        timeout=12
+    ) or []
+    global_data = safe_get_json("https://api.coingecko.com/api/v3/global", timeout=12) or {}
+    dominance = (global_data.get("data", {}).get("market_cap_percentage", {}) or {})
+    rows = []
+    for x in data:
+        rows.append({
+            "asset": x.get("symbol", "").upper(),
+            "price_usd": x.get("current_price"),
+            "change_24h_pct": round(float(x.get("price_change_percentage_24h") or 0), 2),
+            "change_7d_pct": round(float(x.get("price_change_percentage_7d_in_currency") or 0), 2),
+            "volume_24h_usd": x.get("total_volume"),
+            "market_cap_usd": x.get("market_cap")
+        })
+    return {
+        "assets": rows,
+        "btc_dominance_pct": round(float(dominance.get("btc", 0) or 0), 2),
+        "eth_dominance_pct": round(float(dominance.get("eth", 0) or 0), 2),
+        "updated_at_utc": datetime.utcnow().isoformat()
+    }
+
+
+def collect_search_demand_proxy(max_queries=20):
+    queries = [
+        "bitcoin price prediction", "bitcoin ETF flows", "bitcoin macro liquidity",
+        "ethereum ETF staking", "crypto market crash", "crypto bull market",
+        "биткоин прогноз", "биткоин сегодня", "криптовалюта рынок",
+        "эфириум прогноз", "альтсезон", "крипта ФРС",
+        "bitcoin dominance", "stablecoin supply crypto", "crypto regulation SEC",
+        "liquidations bitcoin", "funding rate bitcoin", "bitcoin halving cycle",
+        "Solana ecosystem", "RWA crypto"
+    ][:max_queries]
+    out = []
+    for q in queries:
+        videos = youtube_search(q, max_results=3)
+        score = 0
+        for v in videos:
+            title = v.get("title", "")
+            score += max(1, score_monitor_event(title, v.get("channel", "")))
+        out.append({"query": q, "proxy_score": score, "sample_titles": [v.get("title", "") for v in videos[:2]]})
+    return sorted(out, key=lambda x: x["proxy_score"], reverse=True)
+
+
+def build_search_demand_report():
+    demand = collect_search_demand_proxy(max_queries=20)
+    market = get_market_snapshot()
+    news = get_rss_news()[:12]
+    prompt = f"""
+Сделай радар поискового спроса для HiFi Trade.
+
+Market snapshot:
+{json.dumps(market, ensure_ascii=False, indent=2)}
+
+Search Demand Proxy:
+{json.dumps(demand, ensure_ascii=False, indent=2)}
+
+Новости:
+{json.dumps(news, ensure_ascii=False, indent=2)}
+
+Нужно кратко:
+1. Топ-5 тем спроса.
+2. Что растёт в интересе аудитории.
+3. Что лучше не трогать из-за шума/скама.
+4. 3 идеи Telegram-постов.
+5. 2 идеи YouTube-роликов с оценкой /10.
+6. 2 идеи Shorts с оценкой /10.
+
+Только серьёзные темы: BTC/ETH/macro/ETF/liquidity/regulation/risk management.
+"""
+    answer = ask_ai_packaged(prompt, max_chars=2200)
+    remember_report("search_demand", answer)
+    return answer
+
+
+def ask_ai_strong(prompt, max_chars=2200):
+    """Quality-gated LLM call used by packaged commands and alerts."""
+    prompt_with_memory = inject_memory_policy(prompt)
+    first = ask_ai(prompt_with_memory, max_chars=max_chars)
+    if passes_quality_gate(first):
+        return first[:max_chars]
+    improve_prompt = f"""
+Усиль ответ до 8/10+. Верни только финальный готовый вариант.
+Требования:
+- без скама, мемкоинов, low-cap мусора;
+- понятный конфликт для зрителя;
+- оценка явно в формате .../10;
+- компактно, Telegram-ready;
+- не повторять идеи из памяти без нового угла.
+
+Исходный запрос:
+{prompt_with_memory}
+
+Слабый вариант:
+{first}
+"""
+    second = ask_ai(improve_prompt, max_chars=max_chars)
+    if passes_quality_gate(second):
+        return second[:max_chars]
+    return (
+        "⚠️ Не нашёл достаточно сильный вариант 8/10+.\n"
+        "Лучше не публиковать слабую тему: нужен новый инфоповод, более понятный конфликт или другой угол."
+    )[:max_chars]
+
+
 def get_fear_greed_index():
     try:
         r = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10)
@@ -885,6 +1354,18 @@ def ask_ai(prompt, max_chars=3500):
 
 Система оценки качества:
 {QUALITY_FRAMEWORK}
+
+Правила YouTube-упаковки:
+{YOUTUBE_PACKAGING_RULES}
+
+Правила источников:
+{SOURCE_TIER_RULES}
+
+Правила аналитического содержания:
+{ANALYTICAL_CONTENT_RULES}
+
+Память эффективности роликов:
+{json.dumps(performance_context_for_prompt(), ensure_ascii=False, indent=2)}
 
 Правила:
 - не предлагай мемкоины, скам и low-cap мусор
@@ -955,7 +1436,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/scoretitle название — оценить заголовок /10\n"
         "/weekly_plan — проверить авто-контент-план\n"
         "/smart_monitor_now — проверить smart monitoring\n"
-        "/memory_status — посмотреть, что агент запомнил"
+        "/search_demand — радар поискового спроса\n"
+        "/memory_status — посмотреть, что агент запомнил\n"
+        "/remember_perf — запомнить метрики ролика\n"
+        "/performance — анализ результатов роликов"
     )
 
 async def setchat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1319,6 +1803,7 @@ WEST:
 Ответ должен уместиться в одно Telegram-сообщение.
 Нужно выдать только ОДНУ лучшую идею.
 Она должна быть не копией конкурентов, а более сильным углом на фоне их тем.
+Не выдавай сырой инфоповод. Упакуй тему как готовый YouTube-ролик для зрителя.
 
 Формат строго:
 
@@ -1353,7 +1838,7 @@ WEST:
 Почему даст подписчиков:
 ...
 """
-    answer = ask_ai_strong(prompt, max_chars=2300)
+    answer = ask_ai_packaged(prompt, max_chars=2200)
     remember_generated_content(
         kind="video_idea",
         title=extract_first_title(answer),
@@ -1403,7 +1888,7 @@ RU/CIS YouTube:
 Не говорить:
 ...
 """
-    answer = ask_ai_strong(prompt, max_chars=1900)
+    answer = ask_ai_packaged(prompt, max_chars=1900)
     remember_generated_content(
         kind="shorts_idea",
         title=extract_first_title(answer),
@@ -1637,6 +2122,7 @@ def build_ahead_of_competitors_report():
     competitor_topics = collect_ru_competitor_topics(max_channels=20, per_channel=2)
     news = get_rss_news()[:15]
     west = youtube_search("bitcoin crypto market macro ETF liquidity", max_results=8)
+    search_demand = collect_search_demand_proxy(max_queries=20)
 
     prompt = f"""
 Ты — стратег YouTube-канала HiFi Trade.
@@ -1645,6 +2131,7 @@ def build_ahead_of_competitors_report():
 Важно:
 - Не копируй конкурентов.
 - Нужно быть на шаг впереди.
+- Не выдавай сырой инфоповод; превращай его в понятный конфликт для зрителя.
 - Смотри, что они обсуждают, и найди более сильный угол.
 - Тема должна быть понятная, серьёзная, без скама, мемкоинов и low-cap мусора.
 - Выдавай только варианты 8/10+.
@@ -1661,6 +2148,9 @@ def build_ahead_of_competitors_report():
 
 WEST инфополе:
 {json.dumps(west, ensure_ascii=False, indent=2)}
+
+Search Demand Proxy:
+{json.dumps(search_demand, ensure_ascii=False, indent=2)}
 
 Формат строго:
 
@@ -1694,7 +2184,7 @@ WEST инфополе:
 ...
 """
 
-    answer = ask_ai_strong(prompt, max_chars=2300)
+    answer = ask_ai_packaged(prompt, max_chars=2200)
     remember_generated_content(
         kind="ahead_of_competitors",
         title=extract_first_title(answer),
@@ -1939,6 +2429,84 @@ async def weekly_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_long(update, "🗓 Контент-план на неделю\n\n" + answer)
 
 
+
+async def remember_perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw = " ".join(context.args).strip()
+
+    if not raw:
+        await update.message.reply_text(
+            "Используй:\n"
+            "/remember_perf title=... views=... ctr=... retention=... subscribers=... url=... notes=..."
+        )
+        return
+
+    def extract_field(name, default=""):
+        pattern = rf'{name}=([^=]+?)(?=\s+\w+=|$)'
+        match = re.search(pattern, raw)
+        if not match:
+            return default
+        return match.group(1).strip()
+
+    title = extract_field("title")
+    views = extract_field("views", "0")
+    ctr = extract_field("ctr", "")
+    retention = extract_field("retention", "")
+    subscribers = extract_field("subscribers", "0")
+    url = extract_field("url", "")
+    notes = extract_field("notes", "")
+
+    if not title:
+        await update.message.reply_text("Не вижу title=. Пример: /remember_perf title=BTC не падает views=1500 ctr=6.2 retention=38 subscribers=12")
+        return
+
+    item = remember_video_performance(
+        title=title,
+        url=url,
+        views=views,
+        ctr=ctr if ctr else None,
+        retention=retention if retention else None,
+        subscribers=subscribers,
+        notes=notes
+    )
+
+    await update.message.reply_text(
+        f"Запомнил результат ролика.\n"
+        f"Название: {item['title']}\n"
+        f"Результат: {item['result']}\n"
+        f"Views: {item['views']}\n"
+        f"CTR: {item['ctr']}\n"
+        f"Retention: {item['retention']}"
+    )
+
+
+async def performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    perf = get_performance_memory()
+    recent = perf.get("video_performance", [])[-10:]
+
+    if not recent:
+        await update.message.reply_text("Пока нет сохранённых результатов роликов.")
+        return
+
+    prompt = f"""
+Проанализируй результаты роликов HiFi Trade.
+
+Данные:
+{json.dumps(recent, ensure_ascii=False, indent=2)}
+
+Дай кратко:
+1. Что работает
+2. Что не работает
+3. Какие темы/форматы повторить
+4. Какие темы избегать
+5. 3 рекомендации для следующих роликов
+6. Что улучшить в заголовках/превью
+
+Ответ на русском.
+"""
+
+    await reply_long(update, ask_ai(prompt, max_chars=2500))
+
+
 async def memory_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_success()
     used = data.get("used_ideas", [])
@@ -2080,6 +2648,26 @@ def collect_light_monitor_events():
     events = []
 
     try:
+        market = get_market_snapshot()
+        for asset in market.get("assets", []):
+            ch24 = float(asset.get("change_24h_pct") or 0)
+            ch7 = float(asset.get("change_7d_pct") or 0)
+            if abs(ch24) >= 4 or abs(ch7) >= 8:
+                title = f"{asset.get('asset')} move: {ch24}% 24h, {ch7}% 7d"
+                events.append({
+                    "key": stable_hash(title),
+                    "type": "market_data",
+                    "title": title,
+                    "source": "CoinGecko",
+                    "score": 10 + int(abs(ch24)) + int(abs(ch7) / 2)
+                })
+        if float(market.get("btc_dominance_pct") or 0) >= 55:
+            title = f"BTC dominance high: {market.get('btc_dominance_pct')}%"
+            events.append({"key": stable_hash(title), "type": "market_data", "title": title, "source": "CoinGecko Global", "score": 12})
+    except Exception:
+        logger.exception("Market snapshot monitor failed")
+
+    try:
         for item in get_rss_news()[:18]:
             title = item.get("title", "")
             source = item.get("source", "")
@@ -2155,7 +2743,7 @@ def collect_light_monitor_events():
     return unique[:20]
 
 
-def pick_new_strong_events(events, min_score=7, limit=5):
+def pick_new_strong_events(events, min_score=12, limit=3):
     seen_keys = get_seen_event_keys()
     picked = []
 
@@ -2171,21 +2759,34 @@ def pick_new_strong_events(events, min_score=7, limit=5):
 
 
 def build_smart_monitor_alert(events):
+    """
+    Strict smart monitoring.
+    Must not turn every event into an alert.
+    Sends alert only if AI explicitly says ALERT_YES.
+    """
     memory_context = get_memory_policy_context()
 
     prompt = f"""
-Ты AI-редактор HiFi Trade.
+Ты строгий редакторский фильтр HiFi Trade.
 
-Нашлись новые сильные события/темы.
-Нужно решить, стоит ли отправлять владельцу короткий alert.
+Задача: решить, стоит ли беспокоить владельца канала alert-сообщением.
 
-Правила:
-- если темы слабые или повторяют старое — ответь только NO_ALERT
-- если есть сильная тема 8/10+ — дай короткий alert
-- ответ должен уместиться в одно Telegram-сообщение
-- без мемкоинов, скама, low-cap мусора
-- не давай торговые сигналы
-- думай как редактор канала
+Важно:
+- Не каждый инфоповод достоин сообщения.
+- Если тема обычная, повторная, слабая, слишком общая или уже похожа на прошлые — ответь только NO_ALERT.
+- Alert нужен только если тема реально сильная, свежая и может дать контент 8.5/10+.
+- Не превращай сырой инфоповод в идею любой ценой.
+- Если сомневаешься — NO_ALERT.
+- Мемкоины, 100x, airdrop, presale, low-cap мусор — всегда NO_ALERT.
+- Не более одной главной темы в ответе.
+- Ответ должен уместиться в одно Telegram-сообщение.
+
+Критерии ALERT_YES:
+1. Есть свежий сильный инфоповод.
+2. Он связан с BTC / ETH / ETF / ликвидностью / ФРС / макро / регуляцией / институционалами.
+3. Есть понятный YouTube/Telegram-угол.
+4. Тема не выглядит повтором старой.
+5. Оценка не ниже 8.5/10.
 
 Память и анти-повтор:
 {json.dumps(memory_context, ensure_ascii=False, indent=2)}
@@ -2193,22 +2794,27 @@ def build_smart_monitor_alert(events):
 Новые события:
 {json.dumps(events, ensure_ascii=False, indent=2)}
 
-Формат, если alert нужен:
+Если alert НЕ нужен, ответь строго:
+NO_ALERT
 
-🚨 Новый сильный инфоповод
+Если alert нужен, формат строго такой:
+
+ALERT_YES
+
+🚨 Сильный инфоповод
 
 Тема:
 ...
 
-Почему важно:
+Почему это реально важно:
 ...
 
 Оценка: .../10
 
-Формат:
-Telegram / Shorts / Ролик / Подождать
+Куда подходит:
+Telegram / Shorts / Ролик
 
-Угол подачи:
+Человеческий угол:
 ...
 
 Заголовок:
@@ -2216,17 +2822,31 @@ Telegram / Shorts / Ролик / Подождать
 
 Превью:
 "..."
-
-Если alert НЕ нужен, ответь только:
-NO_ALERT
 """
 
-    return ask_ai_strong(prompt, max_chars=1800)
+    answer = ask_ai(prompt, max_chars=1600)
+
+    if "ALERT_YES" not in answer[:80]:
+        return "NO_ALERT"
+
+    return answer.replace("ALERT_YES", "", 1).strip()
 
 
 async def smart_monitor_tick(app, chat_id):
+    memory = load_memory()
+    min_score = int(memory.get("smart_monitor_min_score", 12))
+    max_alerts_per_day = int(memory.get("smart_monitor_max_alerts_per_day", 2))
+
+    state = get_runtime_state()
+    today = datetime.now(get_timezone()).strftime("%Y-%m-%d")
+    alerts_today_key = f"smart_alerts_{today}"
+    alerts_today = int(state.get(alerts_today_key, 0))
+
+    if alerts_today >= max_alerts_per_day:
+        return
+
     events = collect_light_monitor_events()
-    strong_events = pick_new_strong_events(events, min_score=7, limit=5)
+    strong_events = pick_new_strong_events(events, min_score=min_score, limit=3)
 
     if not strong_events:
         return
@@ -2251,10 +2871,134 @@ async def smart_monitor_tick(app, chat_id):
     for e in strong_events:
         save_seen_event_key(e.get("key", ""))
 
+    state = get_runtime_state()
+    state[alerts_today_key] = alerts_today + 1
+    save_runtime_state(state)
+
+
+def scam_risk_score_text(text):
+    """Heuristic risk engine for topics/tokens/links before editorial use."""
+    lower = (text or "").lower()
+    risk = 0
+    reasons = []
+    red_flags = {
+        "100x": 25, "100х": 25, "икс": 10, "guaranteed": 25, "гарант": 25,
+        "airdrop": 15, "эйрдроп": 15, "presale": 20, "предпродаж": 20,
+        "meme": 18, "memecoin": 18, "мемкоин": 18, "shiba": 20, "doge": 20, "pepe": 20, "floki": 20, "bonk": 18,
+        "low cap": 18, "low-cap": 18, "hidden gem": 18, "gem": 10,
+        "срочно покупай": 30, "buy now": 18, "to the moon": 15, "moonshot": 20,
+        "telegram signal": 18, "vip signal": 22, "private sale": 25, "whitelist": 12,
+        "без риска": 25, "risk free": 25, "пассивный доход": 12
+    }
+    for k, pts in red_flags.items():
+        if k in lower:
+            risk += pts
+            reasons.append(f"красный флаг: {k}")
+    serious_terms = ["bitcoin", "btc", "ethereum", "eth", "etf", "fed", "фрс", "liquidity", "ликвид", "regulation", "регуляц", "risk management"]
+    if any(k in lower for k in serious_terms):
+        risk = max(0, risk - 10)
+    risk = min(100, risk)
+    level = "LOW" if risk < 25 else "MEDIUM" if risk < 60 else "HIGH"
+    return {"risk_score": risk, "risk_level": level, "reasons": reasons[:8]}
+
+
+def build_market_report():
+    market = get_market_snapshot()
+    fear = get_fear_greed_index()
+    news = get_rss_news()[:10]
+    prompt = f"""
+Сделай быстрый market intelligence report для Telegram-канала HiFi Trade.
+
+Fear & Greed:
+{fear}
+
+Market snapshot:
+{json.dumps(market, ensure_ascii=False, indent=2)}
+
+Новости:
+{json.dumps(news, ensure_ascii=False, indent=2)}
+
+Формат:
+📈 Market Now
+
+1. Состояние рынка: bullish/bearish/neutral и почему.
+2. BTC: что важно.
+3. ETH: что важно.
+4. Альты: есть ли риск/ротация.
+5. Главный риск дня.
+6. Что можно дать в Telegram.
+7. Что НЕ стоит шиллировать.
+
+Без торговых рекомендаций. Без обещаний прибыли. Компактно.
+"""
+    answer = ask_ai(prompt, max_chars=2200)
+    remember_report("market_now", answer)
+    return answer
+
+
+async def market_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply_long(update, build_market_report())
+
+
+async def riskcheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = " ".join(context.args).strip()
+    if not query:
+        await update.message.reply_text("Используй: /riskcheck название_токена_или_тема_или_текст")
+        return
+    heuristic = scam_risk_score_text(query)
+    prompt = f"""
+Проверь тему/токен/инфоповод на риск для честного crypto media канала.
+
+Объект проверки:
+{query}
+
+Heuristic risk:
+{json.dumps(heuristic, ensure_ascii=False, indent=2)}
+
+Дай:
+1. Risk level: LOW/MEDIUM/HIGH.
+2. Почему.
+3. Можно ли упоминать в Telegram/YouTube.
+4. Как безопасно подать, если упоминать.
+5. Что обязательно НЕ говорить.
+6. Нужен ли дисклеймер.
+
+Если данных мало — прямо скажи, что это предварительная проверка, а не on-chain аудит.
+"""
+    await reply_long(update, ask_ai(prompt, max_chars=2200))
+
+
+def build_watchlist_status():
+    memory = load_memory()
+    rows = collect_btc_sentiment_influencers()
+    state = get_runtime_state()
+    lines = [
+        "🧭 Статус агента",
+        "",
+        f"Источников sentiment/watchlist: {len(rows)}",
+        f"RU/CIS источников: {sum(1 for r in rows if r.get('market') == 'RU/CIS')}",
+        f"WEST источников: {sum(1 for r in rows if r.get('market') == 'WEST')}",
+        f"Seen event keys: {len(state.get('seen_event_keys', []))}",
+        f"Sent keys: {len(state.get('sent_keys', []))}",
+        f"Smart monitor: {'ON' if memory.get('smart_monitor_enabled', True) else 'OFF'}",
+        f"Smart monitor min score: {memory.get('smart_monitor_min_score', 12)}",
+        f"Max alerts/day: {memory.get('smart_monitor_max_alerts_per_day', 2)}",
+        "",
+        "Рекомендация: для 10/10 добавь в memory.json списки ru_cis_sentiment_watchlist и west_sentiment_watchlist с ключевыми трейдерами/аналитиками."
+    ]
+    return "\n".join(lines)
+
+
+async def watchlist_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply_long(update, build_watchlist_status())
+
 
 async def smart_monitor_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    memory = load_memory()
+    min_score = int(memory.get("smart_monitor_min_score", 12))
+
     events = collect_light_monitor_events()
-    strong_events = pick_new_strong_events(events, min_score=7, limit=5)
+    strong_events = pick_new_strong_events(events, min_score=min_score, limit=3)
 
     if not strong_events:
         await update.message.reply_text("Сильных новых инфоповодов пока не найдено.")
@@ -2273,65 +3017,9 @@ async def smart_monitor_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
-def load_sent_keys():
-    memory = load_memory()
-    keys = memory.get("sent_keys", [])
-    if not isinstance(keys, list):
-        keys = []
-    return set(keys[-200:])
-
-
-def mark_sent_key(sent_keys, key):
-    sent_keys.add(key)
-
-    memory = load_memory()
-    keys = memory.get("sent_keys", [])
-    if not isinstance(keys, list):
-        keys = []
-
-    if key not in keys:
-        keys.append(key)
-
-    memory["sent_keys"] = keys[-200:]
-    save_memory(memory)
-
-
-def get_runtime_state():
-    memory = load_memory()
-    state = memory.get("runtime_state", {})
-    if not isinstance(state, dict):
-        state = {}
-    return state
-
-
-def save_runtime_state(state):
-    memory = load_memory()
-    memory["runtime_state"] = state
-    save_memory(memory)
-
-
-def get_seen_event_keys():
-    state = get_runtime_state()
-    keys = state.get("seen_event_keys", [])
-    if not isinstance(keys, list):
-        keys = []
-    return set(keys[-300:])
-
-
-def save_seen_event_key(key):
-    if not key:
-        return
-
-    state = get_runtime_state()
-    keys = state.get("seen_event_keys", [])
-    if not isinstance(keys, list):
-        keys = []
-
-    if key not in keys:
-        keys.append(key)
-
-    state["seen_event_keys"] = keys[-300:]
-    save_runtime_state(state)
+async def search_demand(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    answer = build_search_demand_report()
+    await reply_long(update, answer)
 
 
 async def scheduled_loop(app):
@@ -2361,7 +3049,7 @@ async def scheduled_loop(app):
                 ahead_days = memory.get("ahead_competitors_days", ["Wednesday"])
                 ahead_time = memory.get("ahead_competitors_time", "12:00")
                 smart_monitor_enabled = memory.get("smart_monitor_enabled", True)
-                smart_monitor_interval_minutes = int(memory.get("smart_monitor_interval_minutes", 30))
+                smart_monitor_interval_minutes = int(memory.get("smart_monitor_interval_minutes", 120))
 
                 if current_time == daily_time:
                     key = f"{date_key}-daily"
@@ -2456,7 +3144,7 @@ WEST:
 8. Текст на превью
 9. Почему это может привести подписчиков
 """
-                        answer = ask_ai_strong(prompt, max_chars=2300)
+                        answer = ask_ai_packaged(prompt, max_chars=2200)
                         remember_generated_content(
                             kind="video_idea",
                             title=extract_first_title(answer),
@@ -2498,7 +3186,7 @@ RU/CIS:
 5. Текст на превью
 6. Почему это может привести подписчиков
 """
-                        answer = ask_ai_strong(prompt, max_chars=1900)
+                        answer = ask_ai_packaged(prompt, max_chars=1900)
                         remember_generated_content(
                             kind="shorts_idea",
                             title=extract_first_title(answer),
@@ -2554,8 +3242,14 @@ def main():
     app.add_handler(CommandHandler("scoreidea", restricted(scoreidea)))
     app.add_handler(CommandHandler("scoretitle", restricted(scoretitle)))
     app.add_handler(CommandHandler("smart_monitor_now", restricted(smart_monitor_now)))
+    app.add_handler(CommandHandler("market_now", restricted(market_now)))
+    app.add_handler(CommandHandler("riskcheck", restricted(riskcheck)))
+    app.add_handler(CommandHandler("watchlist_status", restricted(watchlist_status)))
+    app.add_handler(CommandHandler("search_demand", restricted(search_demand)))
     app.add_handler(CommandHandler("weekly_plan", restricted(weekly_plan)))
     app.add_handler(CommandHandler("memory_status", restricted(memory_status)))
+    app.add_handler(CommandHandler("remember_perf", restricted(remember_perf)))
+    app.add_handler(CommandHandler("performance", restricted(performance)))
     app.add_handler(CommandHandler("cheap", restricted(cheap)))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, restricted(handle_message)))
