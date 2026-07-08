@@ -2039,6 +2039,33 @@ def yt_learn_from_analytics(days=28, max_results=15):
 
 
 
+
+async def auto_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    memory = load_memory()
+
+    lines = [
+        "🤖 Статус автоматизации",
+        "",
+        f"Новости: каждый день в {memory.get('daily_news_time', '09:00')}",
+        f"Smart monitoring: {'включен' if memory.get('smart_monitor_enabled', True) else 'выключен'}, интервал {memory.get('smart_monitor_interval_minutes', 120)} минут",
+        "",
+        f"YouTube auto-learn: {'включен' if memory.get('yt_auto_learn_enabled', True) else 'выключен'}",
+        f"Время auto-learn: {memory.get('yt_auto_learn_time', '21:00')}",
+        f"Период auto-learn: последние {memory.get('yt_auto_learn_days', 7)} дней",
+        "",
+        f"Еженедельная стратегия: {'включена' if memory.get('yt_weekly_strategy_enabled', True) else 'выключена'}",
+        f"День/время: {memory.get('yt_weekly_strategy_day', 'Sunday')} {memory.get('yt_weekly_strategy_time', '18:00')}",
+        "",
+        f"Проверка новых роликов 24/72 часа: {'включена' if memory.get('yt_new_video_check_enabled', True) else 'выключена'}",
+        f"Время проверки: {memory.get('yt_new_video_check_time', '20:00')}",
+        "",
+        "Если хочешь поменять время — правим значения в memory.json."
+    ]
+
+    await update.message.reply_text("\n".join(lines))
+
+
+
 async def env_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     checks = {
         "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
@@ -2141,7 +2168,7 @@ async def yt_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     video_idx = headers.index("video") if "video" in headers else 0
     titles = get_youtube_video_titles([row[video_idx] for row in rows])
-    lines = [f"📊 YouTube Analytics за {days} дней:\n", "Показы и CTR не запрашиваю: YouTube Analytics API отклоняет метрику impressions в этом отчёте.\n"]
+    lines = [f"📊 YouTube Analytics за {days} дней:\n"]
     for row in rows:
         row_data = dict(zip(headers, row))
         vid = row_data.get("video")
@@ -3977,6 +4004,151 @@ async def search_demand(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_long(update, answer)
 
 
+
+def get_yt_analytics_row_for_video(video_id, days=365):
+    end_date = datetime.utcnow().date().isoformat()
+    start_date = (datetime.utcnow().date() - timedelta(days=days)).isoformat()
+
+    data, err = yt_analytics_query(
+        start_date=start_date,
+        end_date=end_date,
+        dimensions="video",
+        metrics="views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained",
+        sort="-views",
+        max_results=200
+    )
+    if err:
+        return None, err
+
+    headers = [h.get("name") for h in data.get("columnHeaders", [])]
+    rows = data.get("rows", [])
+
+    for row in rows:
+        row_data = dict(zip(headers, row))
+        if row_data.get("video") == video_id:
+            return row_data, None
+
+    return None, "Видео не найдено в YouTube Analytics за выбранный период."
+
+
+async def auto_youtube_learn_tick(app, chat_id, days=7):
+    saved, err = yt_learn_from_analytics(days=days, max_results=15)
+
+    if err:
+        await send_long(app, chat_id, f"⚠️ Автообновление YouTube-метрик не сработало:\n{err}")
+        return
+
+    if not saved:
+        return
+
+    success_count = len([x for x in saved if x.get("result") == "success"])
+    weak_count = len([x for x in saved if x.get("result") == "weak"])
+
+    text = (
+        f"📊 YouTube-метрики обновлены автоматически\n\n"
+        f"Период: последние {days} дней\n"
+        f"Импортировано роликов: {len(saved)}\n"
+        f"Сильных: {success_count}\n"
+        f"Слабых: {weak_count}\n\n"
+        f"Теперь /performance и /strategy10 учитывают свежие данные."
+    )
+
+    await send_long(app, chat_id, text)
+
+
+async def auto_weekly_performance_strategy_tick(app, chat_id):
+    prompt = f"""
+Ты главный редактор HiFi Trade.
+
+Сделай еженедельный автоматический отчёт по эффективности канала на базе сохранённых YouTube-метрик.
+
+Память эффективности:
+{json.dumps(performance_context_for_prompt(), ensure_ascii=False, indent=2)}
+
+Сводка паттернов:
+{json.dumps(summarize_performance_patterns(), ensure_ascii=False, indent=2)}
+
+Дай:
+1. Что сработало на этой неделе
+2. Что не сработало
+3. Какие темы повторять
+4. Какие заголовки/превью повторять
+5. Какие темы избегать
+6. 3 идеи больших роликов на следующую неделю
+7. 3 идеи Shorts
+8. Главный вывод редактора
+
+Ответ на русском, без воды.
+"""
+
+    answer = ask_ai(prompt, max_chars=3500)
+    await send_long(app, chat_id, "📈 Еженедельная стратегия по метрикам YouTube\n\n" + answer)
+
+
+async def auto_new_video_check_tick(app, chat_id, target_hours):
+    videos, err = get_my_recent_youtube_videos(max_results=10)
+
+    if err or not videos:
+        return
+
+    now_utc = datetime.utcnow()
+
+    for item in videos:
+        video_id = item.get("id")
+        snippet = item.get("snippet", {})
+        title = snippet.get("title", "без названия")
+        published_at = snippet.get("publishedAt", "")
+
+        if not video_id or not published_at:
+            continue
+
+        try:
+            published_dt = datetime.fromisoformat(published_at.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            continue
+
+        age_hours = (now_utc - published_dt).total_seconds() / 3600
+
+        # Проверяем ролики около 24 часов и около 72 часов.
+        if target_hours == 24:
+            in_window = 20 <= age_hours <= 30
+        else:
+            in_window = 68 <= age_hours <= 80
+
+        if not in_window:
+            continue
+
+        row, row_err = get_yt_analytics_row_for_video(video_id, days=365)
+        if row_err or not row:
+            continue
+
+        prompt = f"""
+Разбери ранние метрики ролика HiFi Trade через {target_hours} часов после публикации.
+
+Название:
+{title}
+
+Ссылка:
+https://youtu.be/{video_id}
+
+Метрики:
+{json.dumps(row, ensure_ascii=False, indent=2)}
+
+Дай:
+1. Ранняя оценка ролика /10
+2. Ролик стартовал сильнее или слабее ожиданий?
+3. Что видно по удержанию и просмотрам
+4. Что можно сделать в следующих роликах
+5. Нужно ли повторять тему/формат
+6. Короткий вывод
+
+Ответ на русском, без воды.
+"""
+
+        answer = ask_ai(prompt, max_chars=2500)
+        await send_long(app, chat_id, f"🎬 Автопроверка ролика через {target_hours} часов\n\n" + answer)
+
+
 async def scheduled_loop(app):
     sent_keys = load_sent_keys()
 
@@ -4005,6 +4177,17 @@ async def scheduled_loop(app):
                 ahead_time = memory.get("ahead_competitors_time", "12:00")
                 smart_monitor_enabled = memory.get("smart_monitor_enabled", True)
                 smart_monitor_interval_minutes = int(memory.get("smart_monitor_interval_minutes", 120))
+
+                yt_auto_learn_enabled = memory.get("yt_auto_learn_enabled", True)
+                yt_auto_learn_time = memory.get("yt_auto_learn_time", "21:00")
+                yt_auto_learn_days = int(memory.get("yt_auto_learn_days", 7))
+
+                yt_weekly_strategy_enabled = memory.get("yt_weekly_strategy_enabled", True)
+                yt_weekly_strategy_day = memory.get("yt_weekly_strategy_day", "Sunday")
+                yt_weekly_strategy_time = memory.get("yt_weekly_strategy_time", "18:00")
+
+                yt_new_video_check_enabled = memory.get("yt_new_video_check_enabled", True)
+                yt_new_video_check_time = memory.get("yt_new_video_check_time", "20:00")
 
                 if current_time == daily_time:
                     key = f"{date_key}-daily"
@@ -4152,6 +4335,31 @@ RU/CIS:
                         await send_long(app, chat_id, text)
                         mark_sent_key(sent_keys, key)
 
+
+                if yt_auto_learn_enabled and current_time == yt_auto_learn_time:
+                    key = f"{date_key}-yt-auto-learn"
+                    if key not in sent_keys:
+                        await auto_youtube_learn_tick(app, chat_id, days=yt_auto_learn_days)
+                        mark_sent_key(sent_keys, key)
+
+                if yt_weekly_strategy_enabled and weekday == yt_weekly_strategy_day and current_time == yt_weekly_strategy_time:
+                    key = f"{date_key}-yt-weekly-strategy"
+                    if key not in sent_keys:
+                        await auto_weekly_performance_strategy_tick(app, chat_id)
+                        mark_sent_key(sent_keys, key)
+
+                if yt_new_video_check_enabled and current_time == yt_new_video_check_time:
+                    key24 = f"{date_key}-yt-new-video-24h"
+                    if key24 not in sent_keys:
+                        await auto_new_video_check_tick(app, chat_id, target_hours=24)
+                        mark_sent_key(sent_keys, key24)
+
+                    key72 = f"{date_key}-yt-new-video-72h"
+                    if key72 not in sent_keys:
+                        await auto_new_video_check_tick(app, chat_id, target_hours=72)
+                        mark_sent_key(sent_keys, key72)
+
+
             if chat_id and smart_monitor_enabled:
                 minute = int(datetime.now(get_timezone()).strftime("%M"))
                 if smart_monitor_interval_minutes > 0 and minute % smart_monitor_interval_minutes == 0:
@@ -4180,6 +4388,7 @@ def main():
     app.add_handler(CommandHandler("start", restricted(start)))
     app.add_handler(CommandHandler("health", restricted(health)))
     app.add_handler(CommandHandler("env_check", restricted(env_check)))
+    app.add_handler(CommandHandler("auto_status", restricted(auto_status)))
     app.add_handler(CommandHandler("yt_auth_check", restricted(yt_auth_check)))
     app.add_handler(CommandHandler("yt_recent", restricted(yt_recent)))
     app.add_handler(CommandHandler("yt_analytics", restricted(yt_analytics)))
