@@ -12,6 +12,7 @@ import logging
 import hashlib
 import tempfile
 from html import escape
+import html
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from openai import OpenAI
@@ -1158,14 +1159,22 @@ def ensure_source_in_post_html(post_text_html, source_url):
     return f"{post_text_html}\n\nИсточник: {escape(source_url, quote=False)}".strip()
 
 
-def fallback_post_text_to_html(post_text):
-    lines = escape(str(post_text or "").strip(), quote=False).splitlines()
+def html_escape_text(value):
+    return html.escape(str(value or ""), quote=False)
+
+
+def make_post_html(post_text):
+    lines = html_escape_text(post_text).strip().splitlines()
     if lines and lines[0].strip():
         lines[0] = f"<b>{lines[0].strip()}</b>"
     html_text = "\n".join(lines)
     html_text = re.sub(r"(?im)^(\s*)Что важно:(\s*)$", r"\1<b>Что важно:</b>\2", html_text)
     html_text = re.sub(r"(?im)^(\s*)Вывод:(\s*)$", r"\1<b>Вывод:</b>\2", html_text)
     return html_text.strip()
+
+
+def fallback_post_text_to_html(post_text):
+    return make_post_html(post_text)
 
 
 def get_draft_post_text_html(draft):
@@ -1177,15 +1186,50 @@ def get_draft_post_text_html(draft):
 
 
 def format_draft_message(draft):
-    media = "Картинка: сгенерирована" if draft.get("image_path") else f"image_prompt:\n{escape(str(draft.get('image_prompt', '—')), quote=False)}"
+    image_status = "готова" if draft.get("image_path") else "не сгенерирована"
     return (
         "<b>📝 Черновик Telegram-поста</b>\n\n"
         f"{get_draft_post_text_html(draft)}\n\n"
-        f"Hype Score: {escape(str(draft.get('hype_score', '—')), quote=False)}\n\n"
-        f"{media}\n\n"
+        "—\n"
+        "<b>Служебно:</b>\n"
+        f"Оценка новости: {escape(str(draft.get('hype_score', '—')), quote=False)}\n"
+        f"Картинка: {image_status}\n"
+        f"Источник: {escape(str(draft.get('source_url') or draft.get('source') or '—'), quote=False)}\n\n"
         "Публикуем?"
     )
 
+
+
+async def reply_text_with_html_fallback(message, html_text, plain_text, **kwargs):
+    try:
+        await message.reply_text(html_text, parse_mode="HTML", **kwargs)
+    except Exception:
+        logger.exception("Telegram HTML reply_text failed; falling back to plain text")
+        await message.reply_text(plain_text, **kwargs)
+
+
+async def reply_photo_with_html_fallback(message, photo, caption_html=None, caption_plain=None, **kwargs):
+    try:
+        await message.reply_photo(photo=photo, caption=caption_html, parse_mode="HTML", **kwargs)
+    except Exception:
+        logger.exception("Telegram HTML reply_photo failed; falling back to plain text")
+        await message.reply_photo(photo=photo, caption=caption_plain, **kwargs)
+
+
+async def send_message_with_html_fallback(bot, chat_id, html_text, plain_text, **kwargs):
+    try:
+        await bot.send_message(chat_id=chat_id, text=html_text, parse_mode="HTML", **kwargs)
+    except Exception:
+        logger.exception("Telegram HTML send_message failed; falling back to plain text")
+        await bot.send_message(chat_id=chat_id, text=plain_text, **kwargs)
+
+
+async def send_photo_with_html_fallback(bot, chat_id, photo, caption_html=None, caption_plain=None, **kwargs):
+    try:
+        await bot.send_photo(chat_id=chat_id, photo=photo, caption=caption_html, parse_mode="HTML", **kwargs)
+    except Exception:
+        logger.exception("Telegram HTML send_photo failed; falling back to plain text")
+        await bot.send_photo(chat_id=chat_id, photo=photo, caption=caption_plain, **kwargs)
 
 def draft_keyboard(draft_id):
     return InlineKeyboardMarkup([
@@ -1226,10 +1270,10 @@ def generate_telegram_post_draft(candidate, rewrite_text=False, rewrite_image=Fa
 - без инвестиционных рекомендаций;
 - без обещаний прибыли;
 - без скама, 100x и дешёвого хайпа;
-- лучше держать пост до 900 знаков;
+- длина поста 700–1000 знаков, чтобы нормально помещался в caption Telegram;
 - HTML-разметка обязательна: заголовок в <b>...</b>, блок <b>Что важно:</b>, блок <b>Вывод:</b>;
 - при необходимости можно использовать <i>...</i>, но без перебора;
-- источник в конце обычным текстом или ссылкой;
+- источник в конце только строкой Источник: ссылка;
 - используй только Telegram-safe HTML: <b>, <i>, <u>, <s>, <a href="">, <code>, <pre>;
 - не используй неподдерживаемые HTML-теги;
 - экранируй пользовательский и новостной текст, если в нём есть HTML-символы;
@@ -1248,6 +1292,7 @@ def generate_telegram_post_draft(candidate, rewrite_text=False, rewrite_image=Fa
         parsed = json.loads(cleaned)
     except Exception:
         parsed = {
+            "post_text_html": "",
             "post_text": raw.strip(),
             "image_prompt": (
                 "Clean editorial crypto macro image, Bitcoin and Ethereum symbols, "
@@ -1333,6 +1378,25 @@ def mark_sent_key(sent_keys, key):
         keys.append(key)
     state["sent_keys"] = keys[-1000:]
     save_runtime_state(state)
+
+
+def update_runtime_state(**updates):
+    state = get_runtime_state()
+    state.update(updates)
+    save_runtime_state(state)
+
+
+def parse_hhmm_time(value, default="09:00"):
+    value = str(value or default).strip()
+    try:
+        hour, minute = value.split(":", 1)
+        hour, minute = int(hour), int(minute)
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError("time out of range")
+        return hour, minute
+    except Exception:
+        hour, minute = default.split(":", 1)
+        return int(hour), int(minute)
 
 
 def stable_hash(value):
@@ -2897,9 +2961,23 @@ async def competitor_db_status(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def auto_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     memory = load_memory()
+    state = get_runtime_state()
+    chat_bound = bool(str(memory.get("telegram_chat_id", "") or "").strip())
 
     lines = [
         "🤖 Статус автоматизации",
+        "",
+        f"telegram_chat_id: {'есть' if chat_bound else 'нет'}",
+        "Чат: привязан" if chat_bound else "Чат: не привязан, отправь /setchat",
+        f"report_timezone: {memory.get('report_timezone', 'Europe/Moscow')}",
+        f"daily_news_time: {memory.get('daily_news_time', '09:00')}",
+        f"scheduler_started_at: {state.get('scheduler_started_at', '—')}",
+        f"scheduler_last_tick_at: {state.get('scheduler_last_tick_at', '—')}",
+        f"morning_last_check_at: {state.get('morning_last_check_at', '—')}",
+        f"morning_last_sent_at: {state.get('morning_last_sent_at', '—')}",
+        f"morning_last_error: {state.get('morning_last_error', '—') or '—'}",
+        f"morning_next_run_at: {state.get('morning_next_run_at', '—')}",
+        f"sent_keys count: {len(state.get('sent_keys', []))}",
         "",
         f"Новости: каждый день в {memory.get('daily_news_time', '09:00')}",
         f"Smart monitoring: {'включен' if memory.get('smart_monitor_enabled', True) else 'выключен'}, интервал {memory.get('smart_monitor_interval_minutes', 120)} минут",
@@ -2920,6 +2998,22 @@ async def auto_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Если хочешь поменять время — правим значения в memory.json."
     ]
 
+    await safe_reply(update, "\n".join(lines))
+
+
+async def test_scheduler_tick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    result = await check_morning_report(context.application, sent_keys=load_sent_keys(), dry_run=True)
+    lines = [
+        "🧪 Тест scheduler tick",
+        "",
+        f"Отправил бы сейчас: {'да' if result.get('would_send') else 'нет'}",
+        f"Причина: {result.get('reason', '—')}",
+        f"now: {result.get('now', '—')}",
+        f"daily_news_time: {result.get('daily_news_time', '—')}",
+        f"today_run_dt: {result.get('today_run_dt', '—')}",
+    ]
+    if result.get("error"):
+        lines.append(f"Ошибка: {result.get('error')}")
     await safe_reply(update, "\n".join(lines))
 
 
@@ -3269,6 +3363,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/setchat\n\n"
         "Команды:\n"
         "/morning_now — короткий новостной отчёт\n"
+        "/test_scheduler_tick — проверить утренний автозапуск\n"
         "/news_candidates — последний список новостей\n"
         "/pick_news 1 — подготовить черновик поста по новости\n"
         "/post_queue — pending-черновики\n"
@@ -3352,6 +3447,148 @@ WEST YouTube:
     await reply_long(update, answer)
 
 
+async def build_and_send_morning_report(app, chat_id):
+    fear_greed = get_fear_greed_index()
+    news = get_rss_news()
+    ru = youtube_search("криптовалюта биткоин рынок сегодня", max_results=6)
+    west = youtube_search("bitcoin crypto market today macro", max_results=6)
+    candidates = build_news_candidates_from_sources(news, ru, west, limit=7)
+
+    prompt = f"""
+Автоматический утренний новостной отчёт HiFi Trade в формате: «что сейчас обсуждают все».
+Ищи не просто важные новости, а хайповые темы с массовым обсуждением и потенциалом роста канала.
+
+Правила отбора:
+{HYPE_NEWS_RULES}
+
+Fear & Greed:
+{fear_greed}
+
+Новости:
+{json.dumps(news, ensure_ascii=False, indent=2)}
+
+RU/CIS YouTube:
+{json.dumps(ru, ensure_ascii=False, indent=2)}
+
+WEST:
+{json.dumps(west, ensure_ascii=False, indent=2)}
+
+Сохранённый список кандидатов:
+{json.dumps(candidates, ensure_ascii=False, indent=2)}
+
+Дай:
+1. Выведи 5–7 хайповых новостей под номерами из сохранённого списка кандидатов.
+2. Для каждой сильной новости выведи строго:
+   - Номер
+   - Короткая тема
+   - Почему обсуждают
+   - Hype Score: X/10
+   - Источник
+   - Можно ли сделать пост: да/нет
+3. В конце напиши: "Пост сам не публикуется. Чтобы подготовить черновик: /pick_news номер".
+
+Не придумывай торговые рекомендации.
+Не продвигай мемкоины, скам, low-cap garbage, random pumps и 100x-темы.
+"""
+    answer = ask_ai(prompt)
+    remember_report("auto_morning_news", answer)
+    text = "🌅 Утренний новостной отчёт HiFi Trade\n\n" + answer
+    await send_long(app, chat_id, text)
+
+
+async def check_morning_report(app, sent_keys=None, dry_run=False):
+    memory = load_memory()
+    tz = get_timezone()
+    now = datetime.now(tz)
+    daily_time = memory.get("daily_news_time", "09:00")
+    hour, minute = parse_hhmm_time(daily_time)
+    today_run_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    key = f"{now.strftime('%Y-%m-%d')}-daily"
+    sent_keys = sent_keys if sent_keys is not None else load_sent_keys()
+    next_run_dt = today_run_dt if now < today_run_dt else today_run_dt + timedelta(days=1)
+
+    diagnostics = {
+        "morning_last_check_at": now.isoformat(),
+        "morning_next_run_at": next_run_dt.isoformat()
+    }
+
+    chat_id = str(memory.get("telegram_chat_id", "") or "").strip()
+    if not chat_id:
+        diagnostics["morning_last_error"] = "telegram_chat_id missing"
+        update_runtime_state(**diagnostics)
+        return {
+            "would_send": False,
+            "reason": "нет chat_id",
+            "now": now.isoformat(),
+            "daily_news_time": daily_time,
+            "today_run_dt": today_run_dt.isoformat(),
+            "key": key
+        }
+
+    if key in sent_keys:
+        update_runtime_state(**diagnostics)
+        return {
+            "would_send": False,
+            "reason": "уже отправлено сегодня",
+            "now": now.isoformat(),
+            "daily_news_time": daily_time,
+            "today_run_dt": today_run_dt.isoformat(),
+            "key": key
+        }
+
+    if now < today_run_dt:
+        update_runtime_state(**diagnostics)
+        return {
+            "would_send": False,
+            "reason": "ещё рано",
+            "now": now.isoformat(),
+            "daily_news_time": daily_time,
+            "today_run_dt": today_run_dt.isoformat(),
+            "key": key
+        }
+
+    if dry_run:
+        update_runtime_state(**diagnostics)
+        return {
+            "would_send": True,
+            "reason": "можно отправлять сейчас",
+            "now": now.isoformat(),
+            "daily_news_time": daily_time,
+            "today_run_dt": today_run_dt.isoformat(),
+            "key": key
+        }
+
+    try:
+        await build_and_send_morning_report(app, chat_id)
+        mark_sent_key(sent_keys, key)
+        sent_at = datetime.now(tz).isoformat()
+        update_runtime_state(
+            **diagnostics,
+            morning_last_sent_at=sent_at,
+            morning_last_error=""
+        )
+        return {
+            "would_send": True,
+            "reason": "отправлено",
+            "now": now.isoformat(),
+            "daily_news_time": daily_time,
+            "today_run_dt": today_run_dt.isoformat(),
+            "key": key
+        }
+    except Exception as e:
+        logger.exception("Morning report failed")
+        update_runtime_state(**diagnostics, morning_last_error=str(e))
+        return {
+            "would_send": False,
+            "reason": "ошибка",
+            "error": str(e),
+            "now": now.isoformat(),
+            "daily_news_time": daily_time,
+            "today_run_dt": today_run_dt.isoformat(),
+            "key": key
+        }
+
+
 async def news_candidates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_news_candidates()
     await reply_long(update, format_news_candidates(data.get("items", [])))
@@ -3406,12 +3643,12 @@ async def pick_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if image_path:
         with open(image_path, "rb") as image:
             if len(text) <= TELEGRAM_CAPTION_LIMIT:
-                await update.message.reply_photo(photo=image, caption=text, parse_mode="HTML", reply_markup=draft_keyboard(draft_id))
+                await reply_photo_with_html_fallback(update.message, image, caption_html=text, caption_plain=draft.get("post_text", ""), reply_markup=draft_keyboard(draft_id))
             else:
                 await update.message.reply_photo(photo=image, reply_markup=draft_keyboard(draft_id))
-                await update.message.reply_text(text, parse_mode="HTML")
+                await reply_text_with_html_fallback(update.message, text, draft.get("post_text", ""))
     else:
-        await update.message.reply_text(text, parse_mode="HTML", reply_markup=draft_keyboard(draft_id))
+        await reply_text_with_html_fallback(update.message, text, draft.get("post_text", ""), reply_markup=draft_keyboard(draft_id))
 
 
 async def post_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3486,12 +3723,12 @@ async def draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             post_text_html = draft.get("post_text_html", "")
             with open(draft["image_path"], "rb") as image:
                 if len(post_text_html) <= TELEGRAM_CAPTION_LIMIT:
-                    await context.bot.send_photo(chat_id=channel_id, photo=image, caption=post_text_html, parse_mode="HTML")
+                    await send_photo_with_html_fallback(context.bot, channel_id, image, caption_html=post_text_html, caption_plain=draft.get("post_text", ""))
                 else:
                     await context.bot.send_photo(chat_id=channel_id, photo=image)
-                    await context.bot.send_message(chat_id=channel_id, text=post_text_html, parse_mode="HTML")
+                    await send_message_with_html_fallback(context.bot, channel_id, post_text_html, draft.get("post_text", ""))
         else:
-            await context.bot.send_message(chat_id=channel_id, text=draft.get("post_text_html", ""), parse_mode="HTML")
+            await send_message_with_html_fallback(context.bot, channel_id, draft.get("post_text_html", ""), draft.get("post_text", ""))
         draft["status"] = "published"
         draft["published_at"] = datetime.utcnow().isoformat()
         upsert_post_draft(draft)
@@ -5567,11 +5804,14 @@ https://youtu.be/{video_id}
 
 async def scheduled_loop(app):
     sent_keys = load_sent_keys()
+    update_runtime_state(scheduler_started_at=datetime.now(get_timezone()).isoformat())
 
     while True:
         try:
+            update_runtime_state(scheduler_last_tick_at=datetime.now(get_timezone()).isoformat())
             memory = load_memory()
             chat_id = memory.get("telegram_chat_id", "")
+            await check_morning_report(app, sent_keys=sent_keys, dry_run=False)
 
             if chat_id:
                 tz = get_timezone()
@@ -5610,53 +5850,9 @@ async def scheduled_loop(app):
                 competitor_auto_learn_max_channels = int(memory.get("competitor_auto_learn_max_channels", 12))
                 competitor_auto_learn_max_videos = int(memory.get("competitor_auto_learn_max_videos", 3))
 
-                if current_time == daily_time:
-                    key = f"{date_key}-daily"
-                    if key not in sent_keys:
-                        fear_greed = get_fear_greed_index()
-                        news = get_rss_news()
-                        ru = youtube_search("криптовалюта биткоин рынок сегодня", max_results=6)
-                        west = youtube_search("bitcoin crypto market today macro", max_results=6)
-                        candidates = build_news_candidates_from_sources(news, ru, west, limit=7)
+                # Утренний отчёт проверяется выше через check_morning_report():
+                # он отправляет отчёт один раз за день, даже если бот проснулся после daily_news_time.
 
-                        prompt = f"""
-Автоматический утренний новостной отчёт HiFi Trade в формате: «что сейчас обсуждают все».
-Ищи не просто важные новости, а хайповые темы с массовым обсуждением и потенциалом роста канала.
-
-Правила отбора:
-{HYPE_NEWS_RULES}
-
-Новости:
-{json.dumps(news, ensure_ascii=False, indent=2)}
-
-RU/CIS YouTube:
-{json.dumps(ru, ensure_ascii=False, indent=2)}
-
-WEST:
-{json.dumps(west, ensure_ascii=False, indent=2)}
-
-Сохранённый список кандидатов:
-{json.dumps(candidates, ensure_ascii=False, indent=2)}
-
-Дай:
-1. Выведи 5–7 хайповых новостей под номерами из сохранённого списка кандидатов.
-2. Для каждой сильной новости выведи строго:
-   - Номер
-   - Короткая тема
-   - Почему обсуждают
-   - Hype Score: X/10
-   - Источник
-   - Можно ли сделать пост: да/нет
-3. В конце напиши: "Пост сам не публикуется. Чтобы подготовить черновик: /pick_news номер".
-
-Не придумывай торговые рекомендации.
-Не продвигай мемкоины, скам, low-cap garbage, random pumps и 100x-темы.
-"""
-                        answer = ask_ai(prompt)
-                        remember_report("auto_morning_news", answer)
-                        text = "🌅 Утренний новостной отчёт HiFi Trade\n\n" + answer
-                        await send_long(app, chat_id, text)
-                        mark_sent_key(sent_keys, key)
 
                 if weekday == blogger_day and current_time == blogger_time:
                     key = f"{date_key}-bloggers"
@@ -5841,6 +6037,7 @@ def main():
     app.add_handler(CommandHandler("yt_video_stats", restricted(yt_video_stats)))
     app.add_handler(CommandHandler("setchat", restricted(setchat)))
     app.add_handler(CommandHandler("morning_now", restricted(morning_now)))
+    app.add_handler(CommandHandler("test_scheduler_tick", restricted(test_scheduler_tick)))
     app.add_handler(CommandHandler("news_candidates", restricted(news_candidates)))
     app.add_handler(CommandHandler("pick_news", restricted(pick_news)))
     app.add_handler(CommandHandler("post_queue", restricted(post_queue)))
