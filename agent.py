@@ -1173,6 +1173,18 @@ def make_post_html(post_text):
     return html_text.strip()
 
 
+def html_to_plain_text(post_text_html):
+    text = str(post_text_html or "")
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</(?:p|div|h[1-6]|li)>", "\n", text)
+    text = re.sub(r'(?i)<a\s+href=(?:"[^"]*"|\'[^\']*\')\s*>(.*?)</a>', r"\1", text, flags=re.DOTALL)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def fallback_post_text_to_html(post_text):
     return make_post_html(post_text)
 
@@ -1230,6 +1242,21 @@ async def send_photo_with_html_fallback(bot, chat_id, photo, caption_html=None, 
     except Exception:
         logger.exception("Telegram HTML send_photo failed; falling back to plain text")
         await bot.send_photo(chat_id=chat_id, photo=photo, caption=caption_plain, **kwargs)
+
+
+async def edit_draft_message(query, text, parse_mode=None, reply_markup=None):
+    message = getattr(query, "message", None)
+    is_photo_message = bool(getattr(message, "photo", None))
+    if is_photo_message:
+        caption = str(text or "")
+        caption_parse_mode = parse_mode
+        if len(caption) > TELEGRAM_CAPTION_LIMIT:
+            caption = html_to_plain_text(caption) if parse_mode == "HTML" else caption
+            caption = (caption[: TELEGRAM_CAPTION_LIMIT - 1].rstrip() + "…")
+            caption_parse_mode = None
+        await query.edit_message_caption(caption=caption, parse_mode=caption_parse_mode, reply_markup=reply_markup)
+    else:
+        await query.edit_message_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
 
 def draft_keyboard(draft_id):
     return InlineKeyboardMarkup([
@@ -1300,12 +1327,14 @@ def generate_telegram_post_draft(candidate, rewrite_text=False, rewrite_image=Fa
             )
         }
 
-    post_text = ensure_source_in_post(str(parsed.get("post_text") or raw).strip()[:3500], source_url)
     post_text_html = parsed.get("post_text_html")
     if post_text_html:
         post_text_html = ensure_source_in_post_html(str(post_text_html).strip()[:3500], source_url)
+        post_text_source = html_to_plain_text(post_text_html)
     else:
-        post_text_html = ensure_source_in_post_html(fallback_post_text_to_html(post_text), source_url)
+        post_text_source = str(parsed.get("post_text") or raw).strip()
+        post_text_html = ensure_source_in_post_html(fallback_post_text_to_html(post_text_source), source_url)
+    post_text = ensure_source_in_post(post_text_source[:3500], source_url)
     return {
         "post_text": post_text,
         "post_text_html": post_text_html,
@@ -1397,6 +1426,16 @@ def parse_hhmm_time(value, default="09:00"):
     except Exception:
         hour, minute = default.split(":", 1)
         return int(hour), int(minute)
+
+
+def should_run_daily_once(key, target_time):
+    if not key or key in load_sent_keys():
+        return False
+    tz = get_timezone()
+    now = datetime.now(tz)
+    hour, minute = parse_hhmm_time(target_time)
+    target_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return now >= target_dt
 
 
 def stable_hash(value):
@@ -3676,14 +3715,14 @@ async def draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action, draft_id = parts[1], parts[2]
     draft = get_post_draft(draft_id)
     if not draft:
-        await query.edit_message_text("Черновик не найден.")
+        await edit_draft_message(query, "Черновик не найден.")
         return
 
     if action == "cancel":
         draft["status"] = "cancelled"
         draft["updated_at"] = datetime.utcnow().isoformat()
         upsert_post_draft(draft)
-        await query.edit_message_text("❌ Черновик отменён.")
+        await edit_draft_message(query, "❌ Черновик отменён.")
         return
 
     if action in {"rewrite_text", "rewrite_image"}:
@@ -3703,36 +3742,37 @@ async def draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             draft["image_path"] = try_generate_image(draft.get("image_prompt", ""), draft_id) or ""
         draft["updated_at"] = datetime.utcnow().isoformat()
         upsert_post_draft(draft)
-        await query.edit_message_text(format_draft_message(draft), parse_mode="HTML", reply_markup=draft_keyboard(draft_id))
+        await edit_draft_message(query, format_draft_message(draft), parse_mode="HTML", reply_markup=draft_keyboard(draft_id))
         return
 
     if action == "publish":
         source_url = draft.get("source_url") or draft.get("source") or get_candidate_source_url(draft.get("candidate", {}))
         if not is_valid_source_url(source_url):
-            await query.edit_message_text("У новости нет источника. Публикация запрещена.")
+            await edit_draft_message(query, "У новости нет источника. Публикация запрещена.")
             return
         draft["post_text"] = ensure_source_in_post(draft.get("post_text", ""), source_url)
         draft["post_text_html"] = get_draft_post_text_html(draft)
         draft["source"] = source_url
         draft["source_url"] = source_url
+        image_path = str(draft.get("image_path") or "").strip()
+        if not image_path or not os.path.exists(image_path):
+            await edit_draft_message(query, "Публикация запрещена: у черновика нет готовой картинки.")
+            return
         channel_id = os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
         if not channel_id:
-            await query.edit_message_text("Не задан TELEGRAM_CHANNEL_ID в Railway Variables")
+            await edit_draft_message(query, "Не задан TELEGRAM_CHANNEL_ID в Railway Variables")
             return
-        if draft.get("image_path") and os.path.exists(draft.get("image_path")):
-            post_text_html = draft.get("post_text_html", "")
-            with open(draft["image_path"], "rb") as image:
-                if len(post_text_html) <= TELEGRAM_CAPTION_LIMIT:
-                    await send_photo_with_html_fallback(context.bot, channel_id, image, caption_html=post_text_html, caption_plain=draft.get("post_text", ""))
-                else:
-                    await context.bot.send_photo(chat_id=channel_id, photo=image)
-                    await send_message_with_html_fallback(context.bot, channel_id, post_text_html, draft.get("post_text", ""))
-        else:
-            await send_message_with_html_fallback(context.bot, channel_id, draft.get("post_text_html", ""), draft.get("post_text", ""))
+        post_text_html = draft.get("post_text_html", "")
+        with open(image_path, "rb") as image:
+            if len(post_text_html) <= TELEGRAM_CAPTION_LIMIT:
+                await send_photo_with_html_fallback(context.bot, channel_id, image, caption_html=post_text_html, caption_plain=draft.get("post_text", ""))
+            else:
+                await context.bot.send_photo(chat_id=channel_id, photo=image)
+                await send_message_with_html_fallback(context.bot, channel_id, post_text_html, draft.get("post_text", ""))
         draft["status"] = "published"
         draft["published_at"] = datetime.utcnow().isoformat()
         upsert_post_draft(draft)
-        await query.edit_message_text("✅ Пост опубликован в канал.")
+        await edit_draft_message(query, "✅ Пост опубликован в канал.")
 
 def collect_btc_sentiment_influencers():
     memory = load_memory()
@@ -5816,7 +5856,6 @@ async def scheduled_loop(app):
             if chat_id:
                 tz = get_timezone()
                 now = datetime.now(tz)
-                current_time = now.strftime("%H:%M")
                 weekday = now.strftime("%A")
                 date_key = now.strftime("%Y-%m-%d")
 
@@ -5854,7 +5893,7 @@ async def scheduled_loop(app):
                 # он отправляет отчёт один раз за день, даже если бот проснулся после daily_news_time.
 
 
-                if weekday == blogger_day and current_time == blogger_time:
+                if weekday == blogger_day and should_run_daily_once(f"{date_key}-bloggers", blogger_time):
                     key = f"{date_key}-bloggers"
                     if key not in sent_keys:
                         rows = collect_btc_sentiment_influencers()
@@ -5866,7 +5905,7 @@ async def scheduled_loop(app):
                         await send_long(app, chat_id, text)
                         mark_sent_key(sent_keys, key)
 
-                if weekday == weekly_plan_day and current_time == weekly_plan_time:
+                if weekday == weekly_plan_day and should_run_daily_once(f"{date_key}-weekly-plan", weekly_plan_time):
                     key = f"{date_key}-weekly-plan"
                     if key not in sent_keys:
                         answer = build_weekly_content_plan()
@@ -5874,7 +5913,7 @@ async def scheduled_loop(app):
                         await send_long(app, chat_id, text)
                         mark_sent_key(sent_keys, key)
 
-                if weekday == video_day and current_time == video_time:
+                if weekday == video_day and should_run_daily_once(f"{date_key}-videoidea", video_time):
                     key = f"{date_key}-videoidea"
                     if key not in sent_keys:
                         news = get_rss_news()
@@ -5915,7 +5954,7 @@ WEST:
                         await send_long(app, chat_id, text)
                         mark_sent_key(sent_keys, key)
 
-                if weekday in ahead_days and current_time == ahead_time:
+                if weekday in ahead_days and should_run_daily_once(f"{date_key}-ahead-competitors", ahead_time):
                     key = f"{date_key}-ahead-competitors"
                     if key not in sent_keys:
                         answer = build_ahead_of_competitors_report()
@@ -5923,7 +5962,7 @@ WEST:
                         await send_long(app, chat_id, text)
                         mark_sent_key(sent_keys, key)
 
-                if weekday in shorts_days and current_time == shorts_time:
+                if weekday in shorts_days and should_run_daily_once(f"{date_key}-shorts", shorts_time):
                     key = f"{date_key}-shorts"
                     if key not in sent_keys:
                         news = get_rss_news()
@@ -5958,19 +5997,19 @@ RU/CIS:
                         mark_sent_key(sent_keys, key)
 
 
-                if yt_auto_learn_enabled and current_time == yt_auto_learn_time:
+                if yt_auto_learn_enabled and should_run_daily_once(f"{date_key}-yt-auto-learn", yt_auto_learn_time):
                     key = f"{date_key}-yt-auto-learn"
                     if key not in sent_keys:
                         await auto_youtube_learn_tick(app, chat_id, days=yt_auto_learn_days)
                         mark_sent_key(sent_keys, key)
 
-                if yt_weekly_strategy_enabled and weekday == yt_weekly_strategy_day and current_time == yt_weekly_strategy_time:
+                if yt_weekly_strategy_enabled and weekday == yt_weekly_strategy_day and should_run_daily_once(f"{date_key}-yt-weekly-strategy", yt_weekly_strategy_time):
                     key = f"{date_key}-yt-weekly-strategy"
                     if key not in sent_keys:
                         await auto_weekly_performance_strategy_tick(app, chat_id)
                         mark_sent_key(sent_keys, key)
 
-                if yt_new_video_check_enabled and current_time == yt_new_video_check_time:
+                if yt_new_video_check_enabled and should_run_daily_once(f"{date_key}-yt-new-video-24h", yt_new_video_check_time):
                     key24 = f"{date_key}-yt-new-video-24h"
                     if key24 not in sent_keys:
                         await auto_new_video_check_tick(app, chat_id, target_hours=24)
@@ -5983,7 +6022,7 @@ RU/CIS:
 
 
 
-                if competitor_auto_learn_enabled and current_time == competitor_auto_learn_time:
+                if competitor_auto_learn_enabled and should_run_daily_once(f"{date_key}-competitor-auto-learn", competitor_auto_learn_time):
                     key = f"{date_key}-competitor-auto-learn"
                     if key not in sent_keys:
                         await auto_competitor_learn_tick(
