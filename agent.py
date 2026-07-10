@@ -16,7 +16,7 @@ import html
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from openai import OpenAI
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler, ContextTypes, filters
 
 OPENAI_API_KEY = (
@@ -1175,11 +1175,20 @@ def make_post_html(post_text):
 
 def html_to_plain_text(post_text_html):
     text = str(post_text_html or "")
+    text = re.sub(r"(?is)```(?:json)?\s*.*?```", "", text)
+    if text.lstrip().startswith("{") and text.rstrip().endswith("}"):
+        try:
+            data = json.loads(text)
+            text = data.get("post_text_html") or data.get("post_text") or data.get("text") or ""
+        except Exception:
+            text = re.sub(r'(?is)"image_prompt"\s*:\s*".*?"', "", text)
     text = re.sub(r"(?i)<br\s*/?>", "\n", text)
     text = re.sub(r"(?i)</(?:p|div|h[1-6]|li)>", "\n", text)
     text = re.sub(r'(?i)<a\s+href=(?:"[^"]*"|\'[^\']*\')\s*>(.*?)</a>', r"\1", text, flags=re.DOTALL)
     text = re.sub(r"<[^>]+>", "", text)
     text = html.unescape(text)
+    text = re.sub(r"(?im)^\s*[{}\[\],]*\s*$", "", text)
+    text = re.sub(r'(?im)^\s*"(?:post_text_html|post_text|image_prompt)"\s*:\s*', "", text)
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
@@ -1244,19 +1253,26 @@ async def send_photo_with_html_fallback(bot, chat_id, photo, caption_html=None, 
         await bot.send_photo(chat_id=chat_id, photo=photo, caption=caption_plain, **kwargs)
 
 
-async def edit_draft_message(query, text, parse_mode=None, reply_markup=None):
+async def edit_draft_message(query, draft, text=None, parse_mode="HTML", reply_markup=None):
+    if isinstance(draft, dict):
+        text = text if text is not None else format_draft_message(draft)
+        reply_markup = reply_markup or draft_keyboard(draft.get("draft_id"))
+    else:
+        text = str(draft if text is None else text)
     message = getattr(query, "message", None)
     is_photo_message = bool(getattr(message, "photo", None))
-    if is_photo_message:
-        caption = str(text or "")
-        caption_parse_mode = parse_mode
-        if len(caption) > TELEGRAM_CAPTION_LIMIT:
-            caption = html_to_plain_text(caption) if parse_mode == "HTML" else caption
-            caption = (caption[: TELEGRAM_CAPTION_LIMIT - 1].rstrip() + "…")
-            caption_parse_mode = None
-        await query.edit_message_caption(caption=caption, parse_mode=caption_parse_mode, reply_markup=reply_markup)
-    else:
-        await query.edit_message_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+    try:
+        if is_photo_message:
+            caption = str(text or "")
+            if len(caption) > TELEGRAM_CAPTION_LIMIT:
+                caption = html_to_plain_text(caption)[: TELEGRAM_CAPTION_LIMIT - 1].rstrip() + "…"
+                parse_mode = None
+            await query.edit_message_caption(caption=caption, parse_mode=parse_mode, reply_markup=reply_markup)
+        else:
+            await query.edit_message_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+    except Exception:
+        logger.exception("Telegram draft message edit failed")
+        await query.message.reply_text("Не удалось обновить черновик в Telegram. Попробуй открыть /post_queue или создать черновик заново.")
 
 def draft_keyboard(draft_id):
     return InlineKeyboardMarkup([
@@ -1318,9 +1334,17 @@ def generate_telegram_post_draft(candidate, rewrite_text=False, rewrite_image=Fa
         cleaned = raw.strip().replace("```json", "").replace("```", "").strip()
         parsed = json.loads(cleaned)
     except Exception:
+        safe_plain = html_to_plain_text(raw).strip()
+        if not safe_plain or "post_text" in safe_plain[:200]:
+            safe_plain = (
+                f"{candidate.get('topic') or 'Важная новость рынка'}\n\n"
+                f"{candidate.get('why_discussed') or candidate.get('summary') or 'Тема требует спокойного разбора без хайпа.'}\n\n"
+                "Что важно:\n— проверь первоисточник;\n— оцени реакцию рынка;\n— не принимай решений по заголовку.\n\n"
+                "Вывод:\nинфоповод стоит разобрать без торговых обещаний."
+            )
         parsed = {
-            "post_text_html": "",
-            "post_text": raw.strip(),
+            "post_text_html": make_post_html(safe_plain),
+            "post_text": safe_plain,
             "image_prompt": (
                 "Clean editorial crypto macro image, Bitcoin and Ethereum symbols, "
                 "serious dark background, market chart glow, no text, no hype, premium finance style"
@@ -1332,7 +1356,7 @@ def generate_telegram_post_draft(candidate, rewrite_text=False, rewrite_image=Fa
         post_text_html = ensure_source_in_post_html(str(post_text_html).strip()[:3500], source_url)
         post_text_source = html_to_plain_text(post_text_html)
     else:
-        post_text_source = str(parsed.get("post_text") or raw).strip()
+        post_text_source = html_to_plain_text(parsed.get("post_text") or raw)
         post_text_html = ensure_source_in_post_html(fallback_post_text_to_html(post_text_source), source_url)
     post_text = ensure_source_in_post(post_text_source[:3500], source_url)
     return {
@@ -1428,14 +1452,73 @@ def parse_hhmm_time(value, default="09:00"):
         return int(hour), int(minute)
 
 
-def should_run_daily_once(key, target_time):
-    if not key or key in load_sent_keys():
-        return False
-    tz = get_timezone()
-    now = datetime.now(tz)
+def task_run_key(task_key, now, weekly=False):
+    return f"{now.strftime('%G-W%V') if weekly else now.strftime('%Y-%m-%d')}-{task_key}"
+
+
+def should_run_daily_once(task_key, target_time, now=None, state=None):
+    state = state or get_runtime_state()
+    now = now or datetime.now(get_timezone())
     hour, minute = parse_hhmm_time(target_time)
     target_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    return now >= target_dt
+    key = task_run_key(task_key, now, weekly=False)
+    sent = set(state.get("sent_keys", []))
+    if key in sent:
+        return False, "уже запускалась сегодня", key, target_dt
+    if now < target_dt:
+        return False, "ещё рано", key, target_dt
+    return True, "можно запускать сейчас", key, target_dt
+
+
+def should_run_weekly_once(task_key, weekday, target_time, now=None, state=None):
+    state = state or get_runtime_state()
+    now = now or datetime.now(get_timezone())
+    hour, minute = parse_hhmm_time(target_time)
+    target_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    key = task_run_key(task_key, now, weekly=True)
+    sent = set(state.get("sent_keys", []))
+    if now.strftime("%A") != weekday:
+        return False, f"сегодня {now.strftime('%A')}, нужен {weekday}", key, target_dt
+    if key in sent:
+        return False, "уже запускалась на этой неделе", key, target_dt
+    if now < target_dt:
+        return False, "ещё рано", key, target_dt
+    return True, "можно запускать сейчас", key, target_dt
+
+
+def mark_task_run(task_key, now=None, weekly=False):
+    now = now or datetime.now(get_timezone())
+    state = get_runtime_state()
+    sent_keys = set(state.get("sent_keys", []))
+    key = task_run_key(task_key, now, weekly=weekly)
+    mark_sent_key(sent_keys, key)
+    update_runtime_state(**{f"task_last_run_{task_key}": now.isoformat()})
+    return key
+
+
+def remember_task_last_run_from_key(run_key, now=None):
+    now = now or datetime.now(get_timezone())
+    task_key = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", str(run_key or ""))
+    task_key = re.sub(r"^\d{4}-W\d{2}-", "", task_key)
+    if task_key:
+        update_runtime_state(**{f"task_last_run_{task_key}": now.isoformat()})
+
+
+def next_daily_run_at(target_time, now=None):
+    now = now or datetime.now(get_timezone())
+    hour, minute = parse_hhmm_time(target_time)
+    dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return dt if now < dt else dt + timedelta(days=1)
+
+
+def next_weekly_run_at(weekday, target_time, now=None):
+    now = now or datetime.now(get_timezone())
+    weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    target_idx = weekdays.index(weekday) if weekday in weekdays else 0
+    days = (target_idx - now.weekday()) % 7
+    hour, minute = parse_hhmm_time(target_time)
+    dt = (now + timedelta(days=days)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return dt if dt > now else dt + timedelta(days=7)
 
 
 def stable_hash(value):
@@ -2998,10 +3081,40 @@ async def competitor_db_status(update: Update, context: ContextTypes.DEFAULT_TYP
     await reply_long(update, "\n".join(lines))
 
 
+def get_scheduler_tasks(memory, now=None, state=None):
+    now = now or datetime.now(get_timezone())
+    state = state or get_runtime_state()
+    specs = [
+        ("daily", "morning report", "daily", memory.get("daily_news_time", "09:00"), None, True),
+        ("bloggers", "bloggers report", "weekly", memory.get("weekly_blogger_mood_time", "10:00"), memory.get("weekly_blogger_mood_day", "Sunday"), True),
+        ("weekly-plan", "weekly content plan", "weekly", memory.get("weekly_content_plan_time", "11:00"), memory.get("weekly_content_plan_day", "Sunday"), True),
+        ("videoidea", "video idea", "weekly", memory.get("video_idea_time", "12:00"), memory.get("video_idea_day", "Friday"), True),
+        ("shorts", "Shorts idea", "weekly", memory.get("shorts_idea_time", "12:00"), (memory.get("shorts_idea_days", ["Monday", "Thursday"]) or ["Monday"])[0], True),
+        ("ahead-competitors", "competitor gap", "weekly", memory.get("ahead_competitors_time", "12:00"), (memory.get("ahead_competitors_days", ["Wednesday"]) or ["Wednesday"])[0], True),
+        ("yt-auto-learn", "YouTube auto-learn", "daily", memory.get("yt_auto_learn_time", "21:00"), None, memory.get("yt_auto_learn_enabled", True)),
+        ("yt-weekly-strategy", "YouTube weekly strategy", "weekly", memory.get("yt_weekly_strategy_time", "18:00"), memory.get("yt_weekly_strategy_day", "Sunday"), memory.get("yt_weekly_strategy_enabled", True)),
+        ("yt-new-video-24h", "new video check 24h", "daily", memory.get("yt_new_video_check_time", "20:00"), None, memory.get("yt_new_video_check_enabled", True)),
+        ("yt-new-video-72h", "new video check 72h", "daily", memory.get("yt_new_video_check_time", "20:00"), None, memory.get("yt_new_video_check_enabled", True)),
+        ("competitor-auto-learn", "competitor auto-learn", "daily", memory.get("competitor_auto_learn_time", "22:00"), None, memory.get("competitor_auto_learn_enabled", True)),
+    ]
+    tasks = []
+    for key, name, period, target_time, weekday, enabled in specs:
+        if period == "weekly":
+            should, reason, run_key, target_dt = should_run_weekly_once(key, weekday, target_time, now, state)
+            next_run = next_weekly_run_at(weekday, target_time, now)
+        else:
+            should, reason, run_key, target_dt = should_run_daily_once(key, target_time, now, state)
+            next_run = next_daily_run_at(target_time, now)
+        tasks.append({"key": key, "name": name, "period": period, "enabled": bool(enabled), "should_run": should, "reason": reason, "run_key": run_key, "target_at": target_dt.isoformat(), "next_run_at": next_run.isoformat()})
+    return tasks
+
+
 async def auto_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     memory = load_memory()
     state = get_runtime_state()
     chat_bound = bool(str(memory.get("telegram_chat_id", "") or "").strip())
+    now = datetime.now(get_timezone())
+    tasks = get_scheduler_tasks(memory, now, state)
 
     lines = [
         "🤖 Статус автоматизации",
@@ -3015,7 +3128,7 @@ async def auto_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"morning_last_check_at: {state.get('morning_last_check_at', '—')}",
         f"morning_last_sent_at: {state.get('morning_last_sent_at', '—')}",
         f"morning_last_error: {state.get('morning_last_error', '—') or '—'}",
-        f"morning_next_run_at: {state.get('morning_next_run_at', '—')}",
+        f"morning_next_run_at: {next_daily_run_at(memory.get('daily_news_time', '09:00'), now).isoformat()}",
         f"sent_keys count: {len(state.get('sent_keys', []))}",
         "",
         f"Новости: каждый день в {memory.get('daily_news_time', '09:00')}",
@@ -3034,14 +3147,26 @@ async def auto_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Автосбор конкурентов: {'включен' if memory.get('competitor_auto_learn_enabled', True) else 'выключен'}",
         f"Время автосбора конкурентов: {memory.get('competitor_auto_learn_time', '22:00')}",
         "",
-        "Если хочешь поменять время — правим значения в memory.json."
+        "Основные автозадачи:",
     ]
+    for task in tasks:
+        lines.append(
+            f"— {task['name']}: {'ON' if task['enabled'] else 'OFF'}; "
+            f"last={state.get('task_last_run_' + task['key'], '—')}; "
+            f"next={task['next_run_at']}; status={task['reason']}"
+        )
+    lines.append("")
+    lines.append("Если хочешь поменять время — правим значения в memory.json.")
 
     await safe_reply(update, "\n".join(lines))
 
 
 async def test_scheduler_tick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = await check_morning_report(context.application, sent_keys=load_sent_keys(), dry_run=True)
+    memory = load_memory()
+    state = get_runtime_state()
+    now = datetime.now(get_timezone())
+    tasks = get_scheduler_tasks(memory, now, state)
     lines = [
         "🧪 Тест scheduler tick",
         "",
@@ -3051,6 +3176,13 @@ async def test_scheduler_tick(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"daily_news_time: {result.get('daily_news_time', '—')}",
         f"today_run_dt: {result.get('today_run_dt', '—')}",
     ]
+    lines.append("")
+    lines.append("Задачи сейчас:")
+    for task in tasks:
+        lines.append(
+            f"— {task['name']}: {'запустилась бы' if task['should_run'] and task['enabled'] else 'нет'}; "
+            f"причина: {task['reason']}; key={task['run_key']}"
+        )
     if result.get("error"):
         lines.append(f"Ошибка: {result.get('error')}")
     await safe_reply(update, "\n".join(lines))
@@ -3058,26 +3190,14 @@ async def test_scheduler_tick(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def env_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    checks = {
-        "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
-        "TELEGRAM_BOT_TOKEN": os.getenv("TELEGRAM_BOT_TOKEN"),
-        "YOUTUBE_API_KEY": os.getenv("YOUTUBE_API_KEY"),
-        "YOUTUBE_CLIENT_ID": os.getenv("YOUTUBE_CLIENT_ID"),
-        "YOUTUBE_CLIENT_SECRET": os.getenv("YOUTUBE_CLIENT_SECRET"),
-        "YOUTUBE_REFRESH_TOKEN": os.getenv("YOUTUBE_REFRESH_TOKEN"),
-        "TELEGRAM_CHANNEL_ID": os.getenv("TELEGRAM_CHANNEL_ID"),
-        "ALLOWED_USER_IDS": os.getenv("ALLOWED_USER_IDS"),
-    }
-
     lines = ["🔍 Railway env check", ""]
-
-    for key, value in checks.items():
-        if value and str(value).strip():
-            safe_len = len(str(value).strip())
-            lines.append(f"✅ {key}: есть, длина {safe_len}")
-        else:
-            lines.append(f"❌ {key}: не найдено")
-
+    for key in ["OPENAI_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID", "YOUTUBE_API_KEY", "YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET", "YOUTUBE_REFRESH_TOKEN"]:
+        lines.append(f"{key}: {'есть' if os.getenv(key, '').strip() else 'нет'}")
+    images_enabled = os.getenv("OPENAI_IMAGES_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+    lines.append(f"OPENAI_IMAGES_ENABLED: {'включено' if images_enabled else 'выключено'}")
+    lines.append(f"OPENAI_IMAGE_MODEL: {os.getenv('OPENAI_IMAGE_MODEL', 'gpt-image-1')}")
+    lines.append(f"OPENAI_IMAGE_SIZE: {os.getenv('OPENAI_IMAGE_SIZE', '1024x1024')}")
+    lines.append(f"ALLOWED_USER_IDS: {'настроено' if os.getenv('ALLOWED_USER_IDS', '').strip() else 'не настроено'}")
     lines.append("")
     lines.append("Если YOUTUBE_CLIENT_ID / YOUTUBE_CLIENT_SECRET / YOUTUBE_REFRESH_TOKEN тут ❌, значит переменные добавлены не туда или деплой их не подхватил.")
     lines.append("Если тут ✅, но /yt_auth_check падает — проблема уже не в Railway variables, а в OAuth-токене/доступах Google.")
@@ -3395,6 +3515,49 @@ async def debug_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def test_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        '<b>Жирный заголовок</b>\n\n<i>Курсивный текст</i>\n\n<b>Жирный смысловой блок</b>\n\n<a href="https://hifitrade.com">Кликабельная ссылка</a>',
+        parse_mode="HTML"
+    )
+
+
+async def test_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    enabled = os.getenv("OPENAI_IMAGES_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+    model = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
+    size = os.getenv("OPENAI_IMAGE_SIZE", "1024x1024")
+    await safe_reply(update, f"OPENAI_IMAGES_ENABLED: {'включено' if enabled else 'выключено'}\nOPENAI_IMAGE_MODEL: {model}\nOPENAI_IMAGE_SIZE: {size}\nПробую сгенерировать тестовую картинку…")
+    image_path = try_generate_image("Clean premium crypto macro test image, Bitcoin symbol, no text", f"test-image-{stable_hash(datetime.utcnow().isoformat())}")
+    if not image_path or not os.path.exists(image_path):
+        await safe_reply(update, "Тестовая картинка не сгенерирована. Проверь OPENAI_IMAGES_ENABLED, модель, размер и API key.")
+        return
+    with open(image_path, "rb") as image:
+        await update.message.reply_photo(photo=image, caption="✅ Тестовая картинка сгенерирована. В канал не публиковалась.")
+
+
+async def test_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Тестовый пост в канал будет отправлен только после подтверждения.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Подтвердить тест в канал", callback_data="test_channel_post:confirm")]])
+    )
+
+
+async def test_channel_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    channel_id = os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
+    if not channel_id:
+        await query.edit_message_text("Не задан TELEGRAM_CHANNEL_ID.")
+        return
+    image_path = try_generate_image("Clean premium crypto macro channel post test image, no text", f"test-channel-{stable_hash(datetime.utcnow().isoformat())}")
+    if not image_path or not os.path.exists(image_path):
+        await query.edit_message_text("Картинка не сгенерирована. Тестовая публикация запрещена.")
+        return
+    with open(image_path, "rb") as image:
+        await context.bot.send_photo(chat_id=channel_id, photo=image, caption="<b>Тестовый пост HiFi Trade</b>\n\nПроверка публикации картинки с HTML-caption.", parse_mode="HTML")
+    await query.edit_message_text("✅ Тестовый пост с картинкой отправлен в канал.")
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await safe_reply(update, 
         "HiFi Trade AI Growth Team запущен ✅\n\n"
@@ -3403,6 +3566,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Команды:\n"
         "/morning_now — короткий новостной отчёт\n"
         "/test_scheduler_tick — проверить утренний автозапуск\n"
+        "/test_html — проверить HTML-оформление\n"
+        "/test_image — проверить генерацию картинки\n"
+        "/test_channel_post — тест в канал после подтверждения\n"
         "/news_candidates — последний список новостей\n"
         "/pick_news 1 — подготовить черновик поста по новости\n"
         "/post_queue — pending-черновики\n"
@@ -3542,8 +3708,8 @@ async def check_morning_report(app, sent_keys=None, dry_run=False):
     daily_time = memory.get("daily_news_time", "09:00")
     hour, minute = parse_hhmm_time(daily_time)
     today_run_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    key = f"{now.strftime('%Y-%m-%d')}-daily"
     sent_keys = sent_keys if sent_keys is not None else load_sent_keys()
+    run, reason, key, _ = should_run_daily_once("daily", daily_time, now, {"sent_keys": list(sent_keys)})
     next_run_dt = today_run_dt if now < today_run_dt else today_run_dt + timedelta(days=1)
 
     diagnostics = {
@@ -3564,22 +3730,22 @@ async def check_morning_report(app, sent_keys=None, dry_run=False):
             "key": key
         }
 
-    if key in sent_keys:
+    if not run and "уже" in reason:
         update_runtime_state(**diagnostics)
         return {
             "would_send": False,
-            "reason": "уже отправлено сегодня",
+            "reason": reason,
             "now": now.isoformat(),
             "daily_news_time": daily_time,
             "today_run_dt": today_run_dt.isoformat(),
             "key": key
         }
 
-    if now < today_run_dt:
+    if not run:
         update_runtime_state(**diagnostics)
         return {
             "would_send": False,
-            "reason": "ещё рано",
+            "reason": reason,
             "now": now.isoformat(),
             "daily_news_time": daily_time,
             "today_run_dt": today_run_dt.isoformat(),
@@ -3600,6 +3766,7 @@ async def check_morning_report(app, sent_keys=None, dry_run=False):
     try:
         await build_and_send_morning_report(app, chat_id)
         mark_sent_key(sent_keys, key)
+        remember_task_last_run_from_key(key, now)
         sent_at = datetime.now(tz).isoformat()
         update_runtime_state(
             **diagnostics,
@@ -3742,7 +3909,20 @@ async def draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             draft["image_path"] = try_generate_image(draft.get("image_prompt", ""), draft_id) or ""
         draft["updated_at"] = datetime.utcnow().isoformat()
         upsert_post_draft(draft)
-        await edit_draft_message(query, format_draft_message(draft), parse_mode="HTML", reply_markup=draft_keyboard(draft_id))
+        if action == "rewrite_image" and draft.get("image_path") and os.path.exists(draft.get("image_path")) and getattr(query.message, "photo", None):
+            try:
+                with open(draft["image_path"], "rb") as image:
+                    await query.edit_message_media(
+                        media=InputMediaPhoto(media=image, caption=format_draft_message(draft), parse_mode="HTML"),
+                        reply_markup=draft_keyboard(draft_id)
+                    )
+            except Exception:
+                logger.exception("Telegram draft image media edit failed")
+                await query.message.reply_text("Картинка создана, но Telegram не смог заменить старое фото. Отправляю новый предпросмотр.")
+                with open(draft["image_path"], "rb") as image:
+                    await query.message.reply_photo(photo=image, caption=format_draft_message(draft), parse_mode="HTML", reply_markup=draft_keyboard(draft_id))
+            return
+        await edit_draft_message(query, draft)
         return
 
     if action == "publish":
@@ -3756,19 +3936,24 @@ async def draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         draft["source_url"] = source_url
         image_path = str(draft.get("image_path") or "").strip()
         if not image_path or not os.path.exists(image_path):
-            await edit_draft_message(query, "Публикация запрещена: у черновика нет готовой картинки.")
+            await edit_draft_message(query, "Картинка не сгенерирована. Публикация запрещена. Нажми «🎨 Переделать картинку» или проверь настройки генерации изображений.")
             return
         channel_id = os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
         if not channel_id:
             await edit_draft_message(query, "Не задан TELEGRAM_CHANNEL_ID в Railway Variables")
             return
         post_text_html = draft.get("post_text_html", "")
-        with open(image_path, "rb") as image:
-            if len(post_text_html) <= TELEGRAM_CAPTION_LIMIT:
-                await send_photo_with_html_fallback(context.bot, channel_id, image, caption_html=post_text_html, caption_plain=draft.get("post_text", ""))
-            else:
-                await context.bot.send_photo(chat_id=channel_id, photo=image)
-                await send_message_with_html_fallback(context.bot, channel_id, post_text_html, draft.get("post_text", ""))
+        try:
+            with open(image_path, "rb") as image:
+                if len(post_text_html) <= TELEGRAM_CAPTION_LIMIT:
+                    await send_photo_with_html_fallback(context.bot, channel_id, image, caption_html=post_text_html, caption_plain=draft.get("post_text", ""))
+                else:
+                    await context.bot.send_photo(chat_id=channel_id, photo=image)
+                    await send_message_with_html_fallback(context.bot, channel_id, post_text_html, draft.get("post_text", ""))
+        except Exception:
+            logger.exception("Telegram channel publish failed")
+            await edit_draft_message(query, "Telegram не принял публикацию. Пост не отмечен опубликованным; проверь логи, HTML и настройки канала.")
+            return
         draft["status"] = "published"
         draft["published_at"] = datetime.utcnow().isoformat()
         upsert_post_draft(draft)
@@ -5851,6 +6036,8 @@ async def scheduled_loop(app):
             update_runtime_state(scheduler_last_tick_at=datetime.now(get_timezone()).isoformat())
             memory = load_memory()
             chat_id = memory.get("telegram_chat_id", "")
+            smart_monitor_enabled = memory.get("smart_monitor_enabled", True)
+            smart_monitor_interval_minutes = int(memory.get("smart_monitor_interval_minutes", 120))
             await check_morning_report(app, sent_keys=sent_keys, dry_run=False)
 
             if chat_id:
@@ -5870,9 +6057,6 @@ async def scheduled_loop(app):
                 shorts_time = memory.get("shorts_idea_time", "12:00")
                 ahead_days = memory.get("ahead_competitors_days", ["Wednesday"])
                 ahead_time = memory.get("ahead_competitors_time", "12:00")
-                smart_monitor_enabled = memory.get("smart_monitor_enabled", True)
-                smart_monitor_interval_minutes = int(memory.get("smart_monitor_interval_minutes", 120))
-
                 yt_auto_learn_enabled = memory.get("yt_auto_learn_enabled", True)
                 yt_auto_learn_time = memory.get("yt_auto_learn_time", "21:00")
                 yt_auto_learn_days = int(memory.get("yt_auto_learn_days", 7))
@@ -5893,34 +6077,33 @@ async def scheduled_loop(app):
                 # он отправляет отчёт один раз за день, даже если бот проснулся после daily_news_time.
 
 
-                if weekday == blogger_day and should_run_daily_once(f"{date_key}-bloggers", blogger_time):
-                    key = f"{date_key}-bloggers"
-                    if key not in sent_keys:
-                        rows = collect_btc_sentiment_influencers()
-                        recent_context = collect_recent_context_for_sources(rows, max_total_items=60)
-                        classified = classify_source_moods(rows, recent_context)
-                        report = build_blogger_mood_report(classified)
-                        remember_report("auto_blogger_mood", report)
-                        text = "📊 Еженедельное настроение инфополя\n\n" + report
-                        await send_long(app, chat_id, text)
-                        mark_sent_key(sent_keys, key)
+                run, _, key, _ = should_run_weekly_once("bloggers", blogger_day, blogger_time, now, {"sent_keys": list(sent_keys)})
+                if run:
+                    rows = collect_btc_sentiment_influencers()
+                    recent_context = collect_recent_context_for_sources(rows, max_total_items=60)
+                    classified = classify_source_moods(rows, recent_context)
+                    report = build_blogger_mood_report(classified)
+                    remember_report("auto_blogger_mood", report)
+                    text = "📊 Еженедельное настроение инфополя\n\n" + report
+                    await send_long(app, chat_id, text)
+                    mark_sent_key(sent_keys, key)
+                    remember_task_last_run_from_key(key, now)
 
-                if weekday == weekly_plan_day and should_run_daily_once(f"{date_key}-weekly-plan", weekly_plan_time):
-                    key = f"{date_key}-weekly-plan"
-                    if key not in sent_keys:
-                        answer = build_weekly_content_plan()
-                        text = "🗓 Автоматический контент-план на неделю\n\n" + answer
-                        await send_long(app, chat_id, text)
-                        mark_sent_key(sent_keys, key)
+                run, _, key, _ = should_run_weekly_once("weekly-plan", weekly_plan_day, weekly_plan_time, now, {"sent_keys": list(sent_keys)})
+                if run:
+                    answer = build_weekly_content_plan()
+                    text = "🗓 Автоматический контент-план на неделю\n\n" + answer
+                    await send_long(app, chat_id, text)
+                    mark_sent_key(sent_keys, key)
+                    remember_task_last_run_from_key(key, now)
 
-                if weekday == video_day and should_run_daily_once(f"{date_key}-videoidea", video_time):
-                    key = f"{date_key}-videoidea"
-                    if key not in sent_keys:
-                        news = get_rss_news()
-                        ru = youtube_search("биткоин криптовалюта рынок прогноз", max_results=8)
-                        west = youtube_search("bitcoin macro liquidity ETF", max_results=8)
+                run, _, key, _ = should_run_weekly_once("videoidea", video_day, video_time, now, {"sent_keys": list(sent_keys)})
+                if run:
+                    news = get_rss_news()
+                    ru = youtube_search("биткоин криптовалюта рынок прогноз", max_results=8)
+                    west = youtube_search("bitcoin macro liquidity ETF", max_results=8)
 
-                        prompt = f"""
+                    prompt = f"""
 Пятничная идея большого ролика для публикации во вторник.
 
 Новости:
@@ -5943,32 +6126,44 @@ WEST:
 8. Текст на превью
 9. Почему это может привести подписчиков
 """
-                        answer = ask_ai_packaged(prompt, max_chars=2200)
-                        remember_generated_content(
-                            kind="video_idea",
-                            title=extract_first_title(answer),
-                            summary=answer,
-                            source="auto_friday_videoidea"
-                        )
-                        text = "🎬 Идея большого ролика на вторник\n\n" + answer
-                        await send_long(app, chat_id, text)
-                        mark_sent_key(sent_keys, key)
+                    answer = ask_ai_packaged(prompt, max_chars=2200)
+                    remember_generated_content(
+                        kind="video_idea",
+                        title=extract_first_title(answer),
+                        summary=answer,
+                        source="auto_friday_videoidea"
+                    )
+                    text = "🎬 Идея большого ролика на вторник\n\n" + answer
+                    await send_long(app, chat_id, text)
+                    mark_sent_key(sent_keys, key)
+                    remember_task_last_run_from_key(key, now)
 
-                if weekday in ahead_days and should_run_daily_once(f"{date_key}-ahead-competitors", ahead_time):
-                    key = f"{date_key}-ahead-competitors"
-                    if key not in sent_keys:
-                        answer = build_ahead_of_competitors_report()
-                        text = "🧠 На шаг впереди RU/CIS конкурентов\n\n" + answer
-                        await send_long(app, chat_id, text)
-                        mark_sent_key(sent_keys, key)
+                ahead_run = False
+                ahead_key = ""
+                for ahead_day in ahead_days:
+                    ahead_run, _, ahead_key, _ = should_run_weekly_once("ahead-competitors", ahead_day, ahead_time, now, {"sent_keys": list(sent_keys)})
+                    if ahead_run:
+                        break
+                if ahead_run:
+                    key = ahead_key
+                    answer = build_ahead_of_competitors_report()
+                    text = "🧠 На шаг впереди RU/CIS конкурентов\n\n" + answer
+                    await send_long(app, chat_id, text)
+                    mark_sent_key(sent_keys, key)
+                    remember_task_last_run_from_key(key, now)
 
-                if weekday in shorts_days and should_run_daily_once(f"{date_key}-shorts", shorts_time):
-                    key = f"{date_key}-shorts"
-                    if key not in sent_keys:
-                        news = get_rss_news()
-                        ru = youtube_search("биткоин рынок сегодня shorts крипта", max_results=8)
+                shorts_run = False
+                shorts_key = ""
+                for shorts_day in shorts_days:
+                    shorts_run, _, shorts_key, _ = should_run_weekly_once("shorts", shorts_day, shorts_time, now, {"sent_keys": list(sent_keys)})
+                    if shorts_run:
+                        break
+                if shorts_run:
+                    key = shorts_key
+                    news = get_rss_news()
+                    ru = youtube_search("биткоин рынок сегодня shorts крипта", max_results=8)
 
-                        prompt = f"""
+                    prompt = f"""
 Идея Shorts для HiFi Trade.
 
 Новости:
@@ -5985,63 +6180,75 @@ RU/CIS:
 5. Текст на превью
 6. Почему это может привести подписчиков
 """
-                        answer = ask_ai_packaged(prompt, max_chars=1900)
-                        remember_generated_content(
-                            kind="shorts_idea",
-                            title=extract_first_title(answer),
-                            summary=answer,
-                            source="auto_shorts"
-                        )
-                        text = "⚡ Идея Shorts\n\n" + answer
-                        await send_long(app, chat_id, text)
-                        mark_sent_key(sent_keys, key)
+                    answer = ask_ai_packaged(prompt, max_chars=1900)
+                    remember_generated_content(
+                        kind="shorts_idea",
+                        title=extract_first_title(answer),
+                        summary=answer,
+                        source="auto_shorts"
+                    )
+                    text = "⚡ Идея Shorts\n\n" + answer
+                    await send_long(app, chat_id, text)
+                    mark_sent_key(sent_keys, key)
+                    remember_task_last_run_from_key(key, now)
 
 
-                if yt_auto_learn_enabled and should_run_daily_once(f"{date_key}-yt-auto-learn", yt_auto_learn_time):
-                    key = f"{date_key}-yt-auto-learn"
-                    if key not in sent_keys:
-                        await auto_youtube_learn_tick(app, chat_id, days=yt_auto_learn_days)
-                        mark_sent_key(sent_keys, key)
+                run, _, key, _ = should_run_daily_once("yt-auto-learn", yt_auto_learn_time, now, {"sent_keys": list(sent_keys)})
+                if yt_auto_learn_enabled and run:
+                    await auto_youtube_learn_tick(app, chat_id, days=yt_auto_learn_days)
+                    mark_sent_key(sent_keys, key)
+                    remember_task_last_run_from_key(key, now)
 
-                if yt_weekly_strategy_enabled and weekday == yt_weekly_strategy_day and should_run_daily_once(f"{date_key}-yt-weekly-strategy", yt_weekly_strategy_time):
-                    key = f"{date_key}-yt-weekly-strategy"
-                    if key not in sent_keys:
-                        await auto_weekly_performance_strategy_tick(app, chat_id)
-                        mark_sent_key(sent_keys, key)
+                run, _, key, _ = should_run_weekly_once("yt-weekly-strategy", yt_weekly_strategy_day, yt_weekly_strategy_time, now, {"sent_keys": list(sent_keys)})
+                if yt_weekly_strategy_enabled and run:
+                    await auto_weekly_performance_strategy_tick(app, chat_id)
+                    mark_sent_key(sent_keys, key)
+                    remember_task_last_run_from_key(key, now)
 
-                if yt_new_video_check_enabled and should_run_daily_once(f"{date_key}-yt-new-video-24h", yt_new_video_check_time):
-                    key24 = f"{date_key}-yt-new-video-24h"
-                    if key24 not in sent_keys:
-                        await auto_new_video_check_tick(app, chat_id, target_hours=24)
-                        mark_sent_key(sent_keys, key24)
+                run24, _, key24, _ = should_run_daily_once("yt-new-video-24h", yt_new_video_check_time, now, {"sent_keys": list(sent_keys)})
+                if yt_new_video_check_enabled and run24:
+                    await auto_new_video_check_tick(app, chat_id, target_hours=24)
+                    mark_sent_key(sent_keys, key24)
+                    remember_task_last_run_from_key(key24, now)
 
-                    key72 = f"{date_key}-yt-new-video-72h"
-                    if key72 not in sent_keys:
-                        await auto_new_video_check_tick(app, chat_id, target_hours=72)
-                        mark_sent_key(sent_keys, key72)
+                run72, _, key72, _ = should_run_daily_once("yt-new-video-72h", yt_new_video_check_time, now, {"sent_keys": list(sent_keys)})
+                if run72:
+                    await auto_new_video_check_tick(app, chat_id, target_hours=72)
+                    mark_sent_key(sent_keys, key72)
+                    remember_task_last_run_from_key(key72, now)
 
 
 
-                if competitor_auto_learn_enabled and should_run_daily_once(f"{date_key}-competitor-auto-learn", competitor_auto_learn_time):
-                    key = f"{date_key}-competitor-auto-learn"
-                    if key not in sent_keys:
-                        await auto_competitor_learn_tick(
-                            app,
-                            chat_id,
-                            max_channels=competitor_auto_learn_max_channels,
-                            max_videos=competitor_auto_learn_max_videos,
-                            silent=True
-                        )
-                        mark_sent_key(sent_keys, key)
+                run, _, key, _ = should_run_daily_once("competitor-auto-learn", competitor_auto_learn_time, now, {"sent_keys": list(sent_keys)})
+                if competitor_auto_learn_enabled and run:
+                    await auto_competitor_learn_tick(
+                        app,
+                        chat_id,
+                        max_channels=competitor_auto_learn_max_channels,
+                        max_videos=competitor_auto_learn_max_videos,
+                        silent=True
+                    )
+                    mark_sent_key(sent_keys, key)
+                    remember_task_last_run_from_key(key, now)
 
 
             if chat_id and smart_monitor_enabled:
-                minute = int(datetime.now(get_timezone()).strftime("%M"))
-                if smart_monitor_interval_minutes > 0 and minute % smart_monitor_interval_minutes == 0:
-                    monitor_key = f"{date_key}-smart-monitor-{datetime.now(get_timezone()).strftime('%H:%M')}"
+                now = datetime.now(get_timezone())
+                date_key = now.strftime("%Y-%m-%d")
+                state = get_runtime_state()
+                last_monitor = state.get("smart_monitor_last_run_at", "")
+                due = True
+                if last_monitor:
+                    try:
+                        due = now >= datetime.fromisoformat(last_monitor) + timedelta(minutes=smart_monitor_interval_minutes)
+                    except Exception:
+                        due = True
+                if smart_monitor_interval_minutes > 0 and due:
+                    monitor_key = f"{date_key}-smart-monitor-{now.strftime('%H:%M')}"
                     if monitor_key not in sent_keys:
                         await smart_monitor_tick(app, chat_id)
                         mark_sent_key(sent_keys, monitor_key)
+                        update_runtime_state(smart_monitor_last_run_at=now.isoformat(), task_last_run_smart_monitor=now.isoformat())
 
             await asyncio.sleep(60)
 
@@ -6077,6 +6284,9 @@ def main():
     app.add_handler(CommandHandler("setchat", restricted(setchat)))
     app.add_handler(CommandHandler("morning_now", restricted(morning_now)))
     app.add_handler(CommandHandler("test_scheduler_tick", restricted(test_scheduler_tick)))
+    app.add_handler(CommandHandler("test_html", restricted(test_html)))
+    app.add_handler(CommandHandler("test_image", restricted(test_image)))
+    app.add_handler(CommandHandler("test_channel_post", restricted(test_channel_post)))
     app.add_handler(CommandHandler("news_candidates", restricted(news_candidates)))
     app.add_handler(CommandHandler("pick_news", restricted(pick_news)))
     app.add_handler(CommandHandler("post_queue", restricted(post_queue)))
@@ -6113,6 +6323,7 @@ def main():
     app.add_handler(CommandHandler("strategy10", restricted(strategy10)))
     app.add_handler(CommandHandler("cheap", restricted(cheap)))
     app.add_handler(CallbackQueryHandler(restricted(draft_callback), pattern=r"^draft:"))
+    app.add_handler(CallbackQueryHandler(restricted(test_channel_post_callback), pattern=r"^test_channel_post:confirm$"))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, restricted(handle_message)))
 
