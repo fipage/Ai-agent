@@ -1120,11 +1120,34 @@ def get_candidate_source_url(candidate):
     return str(candidate.get("source_url") or candidate.get("link") or "").strip()
 
 
-def ensure_source_in_post(post_text, source_url):
+def get_source_display_name(candidate, source_url):
+    source_name = str((candidate or {}).get("source") or "").strip()
+    if source_name and not source_name.startswith("http"):
+        return source_name
+
+    domain = urllib.parse.urlparse(str(source_url or "").strip()).netloc.lower()
+    domain = domain[4:] if domain.startswith("www.") else domain
+    mapping = {
+        "coindesk.com": "CoinDesk",
+        "cointelegraph.com": "Cointelegraph",
+        "reuters.com": "Reuters",
+        "bloomberg.com": "Bloomberg",
+        "forklog.com": "ForkLog",
+        "rbc.ru": "РБК",
+        "news.google.com": "Google News",
+    }
+    for suffix, display_name in mapping.items():
+        if domain == suffix or domain.endswith(f".{suffix}"):
+            return display_name
+    return domain or "Источник"
+
+
+def ensure_source_in_post(post_text, source_url, source_name=None):
     post_text = str(post_text or "").strip()
     source_url = str(source_url or "").strip()
-    post_text = re.sub(r"\n*Источник:\s*\S+\s*$", "", post_text, flags=re.IGNORECASE).strip()
-    return f"{post_text}\n\nИсточник: {source_url}".strip()
+    source_name = str(source_name or get_source_display_name({}, source_url)).strip()
+    post_text = re.sub(r"\n*Источник:\s*.*$", "", post_text, flags=re.IGNORECASE | re.DOTALL).strip()
+    return f"{post_text}\n\nИсточник: {source_name} — {source_url}".strip()
 
 
 TELEGRAM_HTML_TAG_RE = re.compile(r"</?(?:b|i|u|s|code|pre)\s*/?>|<a\s+href=(?:\"[^\"]*\"|'[^']*')\s*>|</a>", re.IGNORECASE)
@@ -1152,11 +1175,14 @@ def sanitize_telegram_html(html_text):
     return "".join(result).strip()
 
 
-def ensure_source_in_post_html(post_text_html, source_url):
+def ensure_source_in_post_html(post_text_html, source_url, source_name=None):
     post_text_html = sanitize_telegram_html(post_text_html)
     source_url = str(source_url or "").strip()
-    post_text_html = re.sub(r"\n*Источник:\s*(?:<a\s+href=\"[^\"]*\">.*?</a>|\S+)\s*$", "", post_text_html, flags=re.IGNORECASE | re.DOTALL).strip()
-    return f"{post_text_html}\n\nИсточник: {escape(source_url, quote=False)}".strip()
+    source_name = str(source_name or get_source_display_name({}, source_url)).strip()
+    post_text_html = re.sub(r"\n*Источник:\s*(?:<a\s+href=\"[^\"]*\">.*?</a>|.*)\s*$", "", post_text_html, flags=re.IGNORECASE | re.DOTALL).strip()
+    safe_url = escape(source_url, quote=True)
+    safe_name = escape(source_name, quote=False)
+    return f'{post_text_html}\n\n<a href="{safe_url}">Источник: {safe_name}</a>'.strip()
 
 
 def html_escape_text(value):
@@ -1199,11 +1225,13 @@ def fallback_post_text_to_html(post_text):
 
 
 def get_draft_post_text_html(draft):
-    source_url = draft.get("source_url") or draft.get("source") or get_candidate_source_url(draft.get("candidate", {}))
+    candidate = draft.get("candidate", {})
+    source_url = draft.get("source_url") or get_candidate_source_url(candidate)
+    source_name = draft.get("source_name") or get_source_display_name(candidate, source_url)
     post_text_html = draft.get("post_text_html")
     if not post_text_html:
         post_text_html = fallback_post_text_to_html(draft.get("post_text", ""))
-    return ensure_source_in_post_html(post_text_html, source_url)
+    return ensure_source_in_post_html(post_text_html, source_url, source_name)
 
 
 def format_draft_message(draft):
@@ -1215,7 +1243,7 @@ def format_draft_message(draft):
         "<b>Служебно:</b>\n"
         f"Оценка новости: {escape(str(draft.get('hype_score', '—')), quote=False)}\n"
         f"Картинка: {image_status}\n"
-        f"Источник: {escape(str(draft.get('source_url') or draft.get('source') or '—'), quote=False)}\n\n"
+        f"Источник: {escape(str(draft.get('source_name') or get_source_display_name(draft.get('candidate', {}), draft.get('source_url') or draft.get('source')) or '—'), quote=False)}\n\n"
         "Публикуем?"
     )
 
@@ -1289,6 +1317,7 @@ def draft_keyboard(draft_id):
 
 def generate_telegram_post_draft(candidate, rewrite_text=False, rewrite_image=False):
     source_url = get_candidate_source_url(candidate)
+    source_name = get_source_display_name(candidate, source_url)
     prompt = f"""
 Сделай черновик Telegram-поста для канала HiFi Trade по выбранной новости.
 
@@ -1298,7 +1327,7 @@ def generate_telegram_post_draft(candidate, rewrite_text=False, rewrite_image=Fa
 Пользовательский style_profile из memory.json в ключе post_style. Используй его вместе с HIFITRADE_POST_STYLE; если есть конфликт, не нарушай запреты и обязательный источник из HIFITRADE_POST_STYLE:
 {format_post_style_profile_for_prompt()}
 
-Источник для строки в конце поста: {source_url}
+Источник для строки в конце поста: {source_name} ({source_url})
 
 Новость:
 {json.dumps(candidate, ensure_ascii=False, indent=2)}
@@ -1316,12 +1345,12 @@ def generate_telegram_post_draft(candidate, rewrite_text=False, rewrite_image=Fa
 - длина поста 700–1000 знаков, чтобы нормально помещался в caption Telegram;
 - HTML-разметка обязательна: заголовок в <b>...</b>, блок <b>Что важно:</b>, блок <b>Вывод:</b>;
 - при необходимости можно использовать <i>...</i>, но без перебора;
-- источник в конце только строкой Источник: ссылка;
+- источник в конце только строкой Источник: название источника;
 - используй только Telegram-safe HTML: <b>, <i>, <u>, <s>, <a href="">, <code>, <pre>;
 - не используй неподдерживаемые HTML-теги;
 - экранируй пользовательский и новостной текст, если в нём есть HTML-символы;
 - не используй слова и формулировки: “покупайте”, “продавайте”, “точно будет рост”;
-- пост обязан закончиться ровно строкой: Источник: {source_url}
+- пост обязан закончиться строкой с источником; URL будет добавлен кодом как кликабельная ссылка
 - если переписываешь текст, всё равно сохрани этот стиль и источник в конце.
 """
     if rewrite_text:
@@ -1353,12 +1382,12 @@ def generate_telegram_post_draft(candidate, rewrite_text=False, rewrite_image=Fa
 
     post_text_html = parsed.get("post_text_html")
     if post_text_html:
-        post_text_html = ensure_source_in_post_html(str(post_text_html).strip()[:3500], source_url)
+        post_text_html = ensure_source_in_post_html(str(post_text_html).strip()[:3500], source_url, source_name)
         post_text_source = html_to_plain_text(post_text_html)
     else:
         post_text_source = html_to_plain_text(parsed.get("post_text") or raw)
-        post_text_html = ensure_source_in_post_html(fallback_post_text_to_html(post_text_source), source_url)
-    post_text = ensure_source_in_post(post_text_source[:3500], source_url)
+        post_text_html = ensure_source_in_post_html(fallback_post_text_to_html(post_text_source), source_url, source_name)
+    post_text = ensure_source_in_post(post_text_source[:3500], source_url, source_name)
     return {
         "post_text": post_text,
         "post_text_html": post_text_html,
@@ -1452,8 +1481,10 @@ def parse_hhmm_time(value, default="09:00"):
         return int(hour), int(minute)
 
 
-def task_run_key(task_key, now, weekly=False):
-    return f"{now.strftime('%G-W%V') if weekly else now.strftime('%Y-%m-%d')}-{task_key}"
+def task_run_key(task_key, now, weekly=False, weekday=None):
+    period_key = now.strftime('%G-W%V') if weekly else now.strftime('%Y-%m-%d')
+    suffix = f"-{weekday}" if weekly and weekday else ""
+    return f"{period_key}-{task_key}{suffix}"
 
 
 def should_run_daily_once(task_key, target_time, now=None, state=None):
@@ -1475,7 +1506,7 @@ def should_run_weekly_once(task_key, weekday, target_time, now=None, state=None)
     now = now or datetime.now(get_timezone())
     hour, minute = parse_hhmm_time(target_time)
     target_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    key = task_run_key(task_key, now, weekly=True)
+    key = task_run_key(task_key, now, weekly=True, weekday=weekday)
     sent = set(state.get("sent_keys", []))
     if now.strftime("%A") != weekday:
         return False, f"сегодня {now.strftime('%A')}, нужен {weekday}", key, target_dt
@@ -1486,11 +1517,11 @@ def should_run_weekly_once(task_key, weekday, target_time, now=None, state=None)
     return True, "можно запускать сейчас", key, target_dt
 
 
-def mark_task_run(task_key, now=None, weekly=False):
+def mark_task_run(task_key, now=None, weekly=False, weekday=None):
     now = now or datetime.now(get_timezone())
     state = get_runtime_state()
     sent_keys = set(state.get("sent_keys", []))
-    key = task_run_key(task_key, now, weekly=weekly)
+    key = task_run_key(task_key, now, weekly=weekly, weekday=weekday)
     mark_sent_key(sent_keys, key)
     update_runtime_state(**{f"task_last_run_{task_key}": now.isoformat()})
     return key
@@ -1761,55 +1792,26 @@ def passes_quality_gate(answer):
     return any(marker in normalized for marker in strong_markers)
 
 
-def ask_ai_packaged(prompt, max_chars=2300):
-    """
-    Generates only strong content. Memory is a cooldown, not a permanent ban.
-    If the first answer is weak, asks once to improve it to 8/10+.
-    """
-    prompt_with_memory = inject_memory_policy(prompt)
-    answer = ask_ai(prompt_with_memory, max_chars=max_chars)
-
-    if passes_quality_gate(answer):
-        return answer
-
-    improve_prompt = f"""
-Предыдущий вариант слабый или без явной оценки 8/10+.
-
-Переделай. Нужно:
-- только один лучший вариант
-- общая оценка 8/10 или выше
-- без длинного текста
-- ответ должен помещаться в одно Telegram-сообщение
-- без механического повтора старых идей
-- если тема уже была, верни её только с новым углом или новым инфоповодом
-- без мусора и хайпа
-- объясни, почему это 8/10+
-
-Исходный запрос с политикой памяти:
-{prompt_with_memory}
-
-Слабый ответ:
-{answer}
-"""
-    improved = ask_ai(improve_prompt, max_chars=max_chars)
-
-    if passes_quality_gate(improved):
-        return improved
-
-    return (
-        "⚠️ Сегодня не нашёл достаточно сильный вариант 8/10+.\n"
-        "Лучше не публиковать слабую тему. Нужен новый инфоповод или другой угол."
-    )
-
-
-
 def ask_ai_packaged(prompt, max_chars=2200):
     """
-    Final editorial pass: raw market event -> human YouTube/Telegram packaging.
-    Use for proactive alerts, video ideas, Shorts ideas and competitor opportunities.
+    Generates only strong packaged content in at most two AI calls.
+    Combines memory cooldown, YouTube packaging rules, raw-marker repackaging
+    and the 8/10+ quality gate.
     """
+    raw_markers = [
+        "jpmorgan",
+        "hilbert",
+        "макроликвид",
+        "ликвидных огранич",
+        "институциональные движения",
+        "анализ ",
+        "на фоне падающих",
+        "на фоне усиливающихся",
+    ]
+
+    prompt_with_memory = inject_memory_policy(prompt)
     packaged_prompt = f"""
-{prompt}
+{prompt_with_memory}
 
 Финальная редакторская проверка перед отправкой пользователю:
 
@@ -1823,7 +1825,7 @@ def ask_ai_packaged(prompt, max_chars=2200):
 - упоминание JPMorgan/Hilbert/Glassnode/и т.п. в заголовке, если без них клик будет понятнее
 
 Обязательно:
-- переведи тему в простой конфликт
+- переведи сырой инфоповод в понятный человеческий конфликт
 - дай готовый заголовок для зрителя
 - дай хук
 - дай 3 превью
@@ -1833,58 +1835,46 @@ def ask_ai_packaged(prompt, max_chars=2200):
 - ответ должен быть компактный и готовый к использованию
 """
 
-    first = ask_ai_strong(packaged_prompt, max_chars=max_chars)
+    first = ask_ai(packaged_prompt, max_chars=max_chars)
+    first_has_raw_markers = any(marker in first.lower() for marker in raw_markers)
+    if passes_quality_gate(first) and not first_has_raw_markers:
+        return first[:max_chars]
 
-    raw_markers = [
-        "jpmorgan",
-        "hilbert",
-        "макроликвид",
-        "ликвидных огранич",
-        "институциональные движения",
-        "анализ ",
-        "на фоне падающих",
-        "на фоне усиливающихся"
-    ]
+    improve_reason = "без явной оценки 8/10+"
+    if first_has_raw_markers:
+        improve_reason = "звучит как сырой аналитический отчёт"
 
-    lower = first.lower()
-    if any(marker in lower for marker in raw_markers):
-        repack_prompt = f"""
-Ответ всё ещё звучит как сырой аналитический отчёт.
+    improve_prompt = f"""
+Предыдущий вариант {improve_reason}.
 
-Переделай в человеческую YouTube-упаковку.
-Сохрани смысл, но убери тяжёлые формулировки.
+Переделай один раз в человеческую YouTube-упаковку 8/10+.
+Нужно:
+- только один лучший вариант
+- перевести сырой инфоповод в простой конфликт для зрителя
+- общая оценка 8/10 или выше
+- без длинного текста
+- ответ должен помещаться в одно Telegram-сообщение
+- без механического повтора старых идей
+- если тема уже была, верни её только с новым углом или новым инфоповодом
+- без мусора и хайпа
+- убери тяжёлые банковские/аналитические формулировки
+- объясни, почему это 8/10+
 
-Сырой ответ:
+Исходный запрос с политикой памяти и правилами упаковки:
+{packaged_prompt}
+
+Слабый ответ:
 {first}
-
-Верни только финальный вариант:
-
-Название:
-...
-
-Оценка упаковки: .../10
-
-Почему кликнут:
-...
-
-Хук:
-...
-
-Превью:
-1. "..." — .../10
-2. "..." — .../10
-3. "..." — .../10
-
-Короткая структура:
-1. ...
-2. ...
-3. ...
-4. ...
-5. ...
 """
-        return ask_ai_strong(repack_prompt, max_chars=max_chars)
+    improved = ask_ai(improve_prompt, max_chars=max_chars)
+    improved_has_raw_markers = any(marker in improved.lower() for marker in raw_markers)
+    if passes_quality_gate(improved) and not improved_has_raw_markers:
+        return improved[:max_chars]
 
-    return first
+    return (
+        "⚠️ Сегодня не нашёл достаточно сильный вариант 8/10+.\n"
+        "Лучше не публиковать слабую тему. Нужен новый инфоповод или другой угол."
+    )
 
 
 def build_weekly_content_plan():
@@ -1981,21 +1971,25 @@ def get_timezone():
     return ZoneInfo(memory.get("report_timezone", "Europe/Moscow"))
 
 def is_user_allowed(update):
-    if not ALLOWED_USER_IDS:
-        return True
-
     user = getattr(update, "effective_user", None)
-    if not user:
+    if not user or not ALLOWED_USER_IDS:
         return False
-
     return user.id in ALLOWED_USER_IDS
+
+
+def auth_denied_message():
+    if not ALLOWED_USER_IDS:
+        return "ALLOWED_USER_IDS не настроен. Отправь /whoami, затем добавь свой ID в Railway Variables."
+    return "Доступ закрыт."
 
 
 def restricted(handler):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_user_allowed(update):
             if update and update.message:
-                await safe_reply(update, "Доступ закрыт.")
+                await safe_reply(update, auth_denied_message())
+            elif update and update.callback_query:
+                await update.callback_query.answer("Доступ закрыт.", show_alert=True)
             return
         return await handler(update, context)
 
@@ -3081,6 +3075,14 @@ async def competitor_db_status(update: Update, context: ContextTypes.DEFAULT_TYP
     await reply_long(update, "\n".join(lines))
 
 
+def normalize_weekdays(value, default):
+    if isinstance(value, (list, tuple, set)):
+        days = [str(day).strip() for day in value if str(day).strip()]
+    else:
+        days = [str(value or default).strip()]
+    return days or [default]
+
+
 def get_scheduler_tasks(memory, now=None, state=None):
     now = now or datetime.now(get_timezone())
     state = state or get_runtime_state()
@@ -3089,8 +3091,8 @@ def get_scheduler_tasks(memory, now=None, state=None):
         ("bloggers", "bloggers report", "weekly", memory.get("weekly_blogger_mood_time", "10:00"), memory.get("weekly_blogger_mood_day", "Sunday"), True),
         ("weekly-plan", "weekly content plan", "weekly", memory.get("weekly_content_plan_time", "11:00"), memory.get("weekly_content_plan_day", "Sunday"), True),
         ("videoidea", "video idea", "weekly", memory.get("video_idea_time", "12:00"), memory.get("video_idea_day", "Friday"), True),
-        ("shorts", "Shorts idea", "weekly", memory.get("shorts_idea_time", "12:00"), (memory.get("shorts_idea_days", ["Monday", "Thursday"]) or ["Monday"])[0], True),
-        ("ahead-competitors", "competitor gap", "weekly", memory.get("ahead_competitors_time", "12:00"), (memory.get("ahead_competitors_days", ["Wednesday"]) or ["Wednesday"])[0], True),
+        ("shorts", "Shorts idea", "weekly", memory.get("shorts_idea_time", "12:00"), normalize_weekdays(memory.get("shorts_idea_days", ["Monday", "Thursday"]), "Monday"), True),
+        ("ahead-competitors", "competitor gap", "weekly", memory.get("ahead_competitors_time", "12:00"), normalize_weekdays(memory.get("ahead_competitors_days", ["Wednesday"]), "Wednesday"), True),
         ("yt-auto-learn", "YouTube auto-learn", "daily", memory.get("yt_auto_learn_time", "21:00"), None, memory.get("yt_auto_learn_enabled", True)),
         ("yt-weekly-strategy", "YouTube weekly strategy", "weekly", memory.get("yt_weekly_strategy_time", "18:00"), memory.get("yt_weekly_strategy_day", "Sunday"), memory.get("yt_weekly_strategy_enabled", True)),
         ("yt-new-video-24h", "new video check 24h", "daily", memory.get("yt_new_video_check_time", "20:00"), None, memory.get("yt_new_video_check_enabled", True)),
@@ -3099,13 +3101,17 @@ def get_scheduler_tasks(memory, now=None, state=None):
     ]
     tasks = []
     for key, name, period, target_time, weekday, enabled in specs:
-        if period == "weekly":
-            should, reason, run_key, target_dt = should_run_weekly_once(key, weekday, target_time, now, state)
-            next_run = next_weekly_run_at(weekday, target_time, now)
-        else:
-            should, reason, run_key, target_dt = should_run_daily_once(key, target_time, now, state)
-            next_run = next_daily_run_at(target_time, now)
-        tasks.append({"key": key, "name": name, "period": period, "enabled": bool(enabled), "should_run": should, "reason": reason, "run_key": run_key, "target_at": target_dt.isoformat(), "next_run_at": next_run.isoformat()})
+        weekdays = normalize_weekdays(weekday, "Sunday") if period == "weekly" else [None]
+        for day in weekdays:
+            if period == "weekly":
+                should, reason, run_key, target_dt = should_run_weekly_once(key, day, target_time, now, state)
+                next_run = next_weekly_run_at(day, target_time, now)
+                display_name = f"{name} — {day}"
+            else:
+                should, reason, run_key, target_dt = should_run_daily_once(key, target_time, now, state)
+                next_run = next_daily_run_at(target_time, now)
+                display_name = name
+            tasks.append({"key": key, "name": display_name, "period": period, "weekday": day, "enabled": bool(enabled), "should_run": should, "reason": reason, "run_key": run_key, "target_at": target_dt.isoformat(), "next_run_at": next_run.isoformat()})
     return tasks
 
 
@@ -3361,6 +3367,14 @@ async def yt_video_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_long(update, ask_ai(prompt, max_chars=2500))
 
 
+async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = getattr(update, "effective_user", None)
+    if not user:
+        await safe_reply(update, "Не смог определить Telegram User ID.")
+        return
+    await safe_reply(update, f"Твой Telegram User ID: {user.id}")
+
+
 async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
     memory = load_memory()
     success = load_success()
@@ -3544,6 +3558,9 @@ async def test_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def test_channel_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    if not is_user_allowed(update):
+        await query.answer("Доступ закрыт.", show_alert=True)
+        return
     await query.answer()
     channel_id = os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
     if not channel_id:
@@ -3562,6 +3579,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await safe_reply(update, 
         "HiFi Trade AI Growth Team запущен ✅\n\n"
         "Сначала отправь:\n"
+        "/whoami — узнать свой Telegram User ID\n"
         "/setchat\n\n"
         "Команды:\n"
         "/morning_now — короткий новостной отчёт\n"
@@ -3824,6 +3842,7 @@ async def pick_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(update, "Стиль не загружен, пост будет написан по базовым правилам HiFi Trade.")
 
     source_url = get_candidate_source_url(candidate)
+    source_name = get_source_display_name(candidate, source_url)
     if not is_valid_source_url(source_url):
         await safe_reply(update, "У новости нет источника. Публикация запрещена.")
         return
@@ -3836,12 +3855,13 @@ async def pick_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "status": "pending",
         "created_at": datetime.utcnow().isoformat(),
         "candidate": candidate,
-        "post_text": ensure_source_in_post(generated.get("post_text", ""), source_url),
-        "post_text_html": ensure_source_in_post_html(generated.get("post_text_html") or fallback_post_text_to_html(generated.get("post_text", "")), source_url),
+        "post_text": ensure_source_in_post(generated.get("post_text", ""), source_url, source_name),
+        "post_text_html": ensure_source_in_post_html(generated.get("post_text_html") or fallback_post_text_to_html(generated.get("post_text", "")), source_url, source_name),
         "image_prompt": generated.get("image_prompt", ""),
         "image_path": image_path or "",
         "source": source_url,
         "source_url": source_url,
+        "source_name": source_name,
         "hype_score": candidate.get("hype_score", "—")
     }
     upsert_post_draft(draft)
@@ -3868,13 +3888,17 @@ async def post_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"{i}. {candidate.get('topic', 'Без темы')}")
         lines.append(f"ID: {draft.get('draft_id')}")
         lines.append(f"Hype Score: {draft.get('hype_score', '—')}")
-        lines.append(f"Источник: {draft.get('source', '—')}")
+        source_url = draft.get("source_url") or draft.get("source")
+        lines.append(f"Источник: {draft.get('source_name') or get_source_display_name(candidate, source_url) or '—'}")
         lines.append("")
     await reply_long(update, "\n".join(lines).strip())
 
 
 async def draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    if not is_user_allowed(update):
+        await query.answer("Доступ закрыт.", show_alert=True)
+        return
     await query.answer()
     parts = (query.data or "").split(":")
     if len(parts) != 3 or parts[0] != "draft":
@@ -3899,11 +3923,13 @@ async def draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rewrite_image=action == "rewrite_image"
         )
         source_url = draft.get("source_url") or draft.get("source") or get_candidate_source_url(draft.get("candidate", {}))
+        source_name = draft.get("source_name") or get_source_display_name(draft.get("candidate", {}), source_url)
         if action == "rewrite_text":
-            draft["post_text"] = ensure_source_in_post(generated.get("post_text", draft.get("post_text", "")), source_url)
-            draft["post_text_html"] = ensure_source_in_post_html(generated.get("post_text_html") or fallback_post_text_to_html(draft.get("post_text", "")), source_url)
+            draft["post_text"] = ensure_source_in_post(generated.get("post_text", draft.get("post_text", "")), source_url, source_name)
+            draft["post_text_html"] = ensure_source_in_post_html(generated.get("post_text_html") or fallback_post_text_to_html(draft.get("post_text", "")), source_url, source_name)
             draft["source"] = source_url
             draft["source_url"] = source_url
+            draft["source_name"] = source_name
         else:
             draft["image_prompt"] = generated.get("image_prompt", draft.get("image_prompt", ""))
             draft["image_path"] = try_generate_image(draft.get("image_prompt", ""), draft_id) or ""
@@ -3930,7 +3956,9 @@ async def draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_valid_source_url(source_url):
             await edit_draft_message(query, "У новости нет источника. Публикация запрещена.")
             return
-        draft["post_text"] = ensure_source_in_post(draft.get("post_text", ""), source_url)
+        source_name = draft.get("source_name") or get_source_display_name(draft.get("candidate", {}), source_url)
+        draft["post_text"] = ensure_source_in_post(draft.get("post_text", ""), source_url, source_name)
+        draft["source_name"] = source_name
         draft["post_text_html"] = get_draft_post_text_html(draft)
         draft["source"] = source_url
         draft["source_url"] = source_url
@@ -6267,8 +6295,9 @@ def main():
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
-    app.add_handler(CommandHandler("start", restricted(start)))
-    app.add_handler(CommandHandler("health", restricted(health)))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("health", health))
+    app.add_handler(CommandHandler("whoami", whoami))
     app.add_handler(CommandHandler("env_check", restricted(env_check)))
     app.add_handler(CommandHandler("auto_status", restricted(auto_status)))
     app.add_handler(CommandHandler("competitor_learn", restricted(competitor_learn)))
