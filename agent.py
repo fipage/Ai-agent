@@ -1175,11 +1175,28 @@ def sanitize_telegram_html(html_text):
     return "".join(result).strip()
 
 
+def strip_source_footer_html(post_text_html):
+    post_text_html = str(post_text_html or "").strip()
+    post_text_html = re.sub(
+        r"\s*<a\s+href=\"[^\"]*\">\s*Источник:\s*.*?</a>\s*$",
+        "",
+        post_text_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    ).strip()
+    post_text_html = re.sub(
+        r"\s*Источник:\s*.*$",
+        "",
+        post_text_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    ).strip()
+    return post_text_html
+
+
 def ensure_source_in_post_html(post_text_html, source_url, source_name=None):
     post_text_html = sanitize_telegram_html(post_text_html)
     source_url = str(source_url or "").strip()
     source_name = str(source_name or get_source_display_name({}, source_url)).strip()
-    post_text_html = re.sub(r"\n*Источник:\s*(?:<a\s+href=\"[^\"]*\">.*?</a>|.*)\s*$", "", post_text_html, flags=re.IGNORECASE | re.DOTALL).strip()
+    post_text_html = strip_source_footer_html(post_text_html)
     safe_url = escape(source_url, quote=True)
     safe_name = escape(source_name, quote=False)
     return f'{post_text_html}\n\n<a href="{safe_url}">Источник: {safe_name}</a>'.strip()
@@ -2512,7 +2529,7 @@ def get_fear_greed_index():
     return "Fear & Greed: unavailable"
 
 
-def ask_ai(prompt, max_chars=3500):
+def ask_ai(prompt, max_chars=3500, max_output_tokens=None):
     memory = get_compact_memory()
     success = get_compact_success()
 
@@ -2573,7 +2590,7 @@ def ask_ai(prompt, max_chars=3500):
 
     response = client.responses.create(
         model=MODEL_CHEAP,
-        max_output_tokens=MAX_OUTPUT_TOKENS,
+        max_output_tokens=max_output_tokens or MAX_OUTPUT_TOKENS,
         input=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": compact_prompt}
@@ -3042,7 +3059,7 @@ async def topic_gap_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Ответ на русском.
 """
 
-    await reply_long(update, ask_ai(prompt, max_chars=9000))
+    await reply_long(update, ask_ai(prompt, max_chars=9000, max_output_tokens=2200))
 
 
 async def competitor_db_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6240,7 +6257,7 @@ RU/CIS:
                     remember_task_last_run_from_key(key24, now)
 
                 run72, _, key72, _ = should_run_daily_once("yt-new-video-72h", yt_new_video_check_time, now, {"sent_keys": list(sent_keys)})
-                if run72:
+                if yt_new_video_check_enabled and run72:
                     await auto_new_video_check_tick(app, chat_id, target_hours=72)
                     mark_sent_key(sent_keys, key72)
                     remember_task_last_run_from_key(key72, now)
